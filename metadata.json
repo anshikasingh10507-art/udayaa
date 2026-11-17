@@ -1,0 +1,8 @@
+{
+  "name": "Udaya",
+  "description": "Zero-Idle Equipment Marketplace connecting equipment owners with contractors and businesses that need equipment temporarily.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,16 +1,33 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Calendar, CheckCircle2, AlertTriangle, MessageSquare, Flag, Wrench } from 'lucide-react';
+import {
+  ArrowLeft,
+  Calendar,
+  CheckCircle2,
+  AlertTriangle,
+  MessageSquare,
+  Flag,
+  Wrench,
+  ShieldCheck,
+  Lock,
+  FlaskConical,
+  Box,
+  MapPin,
+  Bookmark,
+  BookmarkCheck,
+} from 'lucide-react';
 import { apiFetch, formatINR } from '../lib/api';
 import type { EquipmentListing, MaintenanceRecord } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { useFirebase } from '../context/FirebaseContext';
 import { EquipmentImage } from '../components/EquipmentCard';
-import { MaintenanceVerificationLabel } from '../components/StatusLabel';
+import { MaintenanceVerificationLabel, VerifiedMachineryBadge } from '../components/StatusLabel';
 import { CostBreakdownPanel, type CostLineItem } from '../components/CostBreakdownPanel';
 
 export function EquipmentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
+  const { isBookmarked, toggleBookmark } = useFirebase();
   const navigate = useNavigate();
 
   const [equipment, setEquipment] = useState<EquipmentListing | null>(null);
@@ -261,6 +278,95 @@ export function EquipmentDetailPage() {
               {equipment.make_model && (
                 <p className="text-sm text-slate-500 mt-1">Make / Model: {equipment.make_model}</p>
               )}
+
+              {/* Verified Machinery Badge & High-Capex Asset Callout */}
+              {(equipment.is_verified_machinery || equipment.verification_badge_tier === 'documents_reviewed' || equipment.rent_only_high_capex) && (
+                <div className="mt-4 p-4 rounded-md border border-emerald-200 bg-emerald-50/50 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <VerifiedMachineryBadge
+                      isVerified={equipment.is_verified_machinery}
+                      tier={equipment.verification_badge_tier}
+                      certificateId={equipment.verification_certificate_id}
+                    />
+                    {equipment.calibration_valid_until && (
+                      <span className="text-xs text-slate-700 font-mono">
+                        Calibration valid until: {equipment.calibration_valid_until}
+                      </span>
+                    )}
+                  </div>
+                  {equipment.rent_only_high_capex && (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-700 pt-1 border-t border-emerald-200/70">
+                      <span className="inline-flex items-center gap-1 font-semibold text-[#0F766E]">
+                        <FlaskConical className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>High-Capex Rent-Only Equipment</span>
+                      </span>
+                      {equipment.replacement_value_inr && (
+                        <span>
+                          Est. replacement value:{' '}
+                          <span className="font-mono font-semibold text-[#0F172A]">
+                            {formatINR(equipment.replacement_value_inr)}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Interactive Inspection & Cloud Actions */}
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Link
+                  to={`/inspector-3d?model=${
+                    equipment.category_sector === 'laboratory'
+                      ? 'hplc'
+                      : equipment.category_sector === 'precision_industrial'
+                        ? 'cnc'
+                        : 'excavator'
+                  }`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#0F172A] hover:bg-slate-800 rounded-md transition-colors"
+                >
+                  <Box className="w-3.5 h-3.5 text-teal-400" aria-hidden="true" />
+                  <span>Inspect in 3D</span>
+                </Link>
+                <Link
+                  to="/map"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0F172A] bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
+                >
+                  <MapPin className="w-3.5 h-3.5 text-[#0D9488]" aria-hidden="true" />
+                  <span>Yard Map & Delivery Route</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void toggleBookmark({
+                      equipmentId: equipment.id,
+                      title: equipment.title,
+                      categoryName: equipment.category_name || 'Equipment',
+                      locationCity: equipment.location_city,
+                      dailyRate: equipment.daily_rate,
+                      imageUrl: equipment.image_url || '',
+                      isVerified: Boolean(equipment.is_verified_machinery),
+                    })
+                  }
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${
+                    isBookmarked(equipment.id)
+                      ? 'bg-teal-50 text-[#0F766E] border-teal-300'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  {isBookmarked(equipment.id) ? (
+                    <>
+                      <BookmarkCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Saved to Cloud</span>
+                    </>
+                  ) : (
+                    <>
+                      <Bookmark className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Save to Watchlist</span>
+                    </>
+                  )}
+                </button>
+              </div>
 
               {isUnavailable && (
                 <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-md flex items-start gap-2.5 text-sm text-amber-900">
@@ -634,9 +740,14 @@ export function EquipmentDetailPage() {
                         ? 'Submit Rental Request'
                         : 'Sign In to Request Rental'}
                 </button>
-                <p className="text-xs text-slate-500 text-center">
-                  Submitting sends a request to the owner. No online payment is collected in this demo.
-                </p>
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-md flex items-start gap-2.5 text-xs text-slate-700">
+                  <Lock className="w-4 h-4 text-[#0F766E] shrink-0 mt-0.5" aria-hidden="true" />
+                  <div>
+                    <span className="font-semibold text-[#0F172A]">Udaya Escrow Protection:</span> Once the owner
+                    accepts or quotes, fund the rental &amp; refundable deposit via Udaya Escrow in your Bookings
+                    workspace. Funds release only after handover and return inspection.
+                  </div>
+                </div>
               </form>
             )}
           </div>

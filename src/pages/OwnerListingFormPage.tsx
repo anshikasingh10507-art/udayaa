@@ -12,6 +12,10 @@ const IMAGE_PRESETS = [
   { label: 'Wheel Loader / Skid Steer', url: '/src/assets/images/eq_skid_loader_1794920313017.jpg' },
   { label: 'Concrete Mixer', url: '/src/assets/images/eq_concrete_mixer_1794920312061.jpg' },
   { label: 'Diesel Generator', url: '/src/assets/images/eq_diesel_generator_1794920312999.jpg' },
+  { label: 'Analytical Lab HPLC / LC-MS', url: '/src/assets/images/eq_lab_hplc_spectrometer_1795217352610.jpg' },
+  { label: 'Biotech Confocal Microscope', url: '/src/assets/images/eq_lab_confocal_microscope_1795217353612.jpg' },
+  { label: '5-Axis Precision CNC Center', url: '/src/assets/images/eq_industrial_cnc_machine_1795217351702.jpg' },
+  { label: '3D Terrestrial LiDAR Scanner', url: '/src/assets/images/eq_lidar_survey_scanner_1795217352658.jpg' },
 ];
 
 export function OwnerListingFormPage() {
@@ -42,6 +46,9 @@ export function OwnerListingFormPage() {
   const [depositAmount, setDepositAmount] = useState('');
   const [availabilityStatus, setAvailabilityStatus] = useState<'available' | 'paused' | 'maintenance'>('available');
   const [conditionSummary, setConditionSummary] = useState('');
+  const [replacementValueInr, setReplacementValueInr] = useState('');
+  const [calibrationValidUntil, setCalibrationValidUntil] = useState('');
+  const [rentOnlyHighCapex, setRentOnlyHighCapex] = useState(false);
   const [imageUrl, setImageUrl] = useState(IMAGE_PRESETS[0].url);
 
   // Date blockout state (Edit mode)
@@ -82,6 +89,9 @@ export function OwnerListingFormPage() {
         setDepositAmount(eq.deposit_amount != null ? String(eq.deposit_amount) : '');
         setAvailabilityStatus(eq.availability_status);
         setConditionSummary(eq.condition_summary);
+        setReplacementValueInr(eq.replacement_value_inr != null ? String(eq.replacement_value_inr) : '');
+        setCalibrationValidUntil(eq.calibration_valid_until || '');
+        setRentOnlyHighCapex(Boolean(eq.rent_only_high_capex));
         setImageUrl(eq.image_url);
         setBlocks(eq.availability_blocks || []);
       })
@@ -129,6 +139,9 @@ export function OwnerListingFormPage() {
         depositAmount: depositAmount ? Number(depositAmount) : null,
         availabilityStatus,
         conditionSummary,
+        replacementValueInr: replacementValueInr ? Number(replacementValueInr) : null,
+        calibrationValidUntil: calibrationValidUntil || null,
+        rentOnlyHighCapex,
         imageUrl,
       };
       if (isEdit && id) {
@@ -460,9 +473,58 @@ export function OwnerListingFormPage() {
             type="text"
             value={conditionSummary}
             onChange={(e) => setConditionSummary(e.target.value)}
-            placeholder="e.g. Serviced at 2,100 hrs, hydraulic hoses inspected, 80% tire tread"
+            placeholder="e.g. Serviced at 2,100 hrs, ISO 17025 calibrated, hydraulic hoses inspected"
             className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md bg-[#F8FAFC]"
           />
+        </div>
+
+        {/* High-Capex Lab / Precision Machinery Metadata */}
+        <div className="pt-4 border-t border-slate-100 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-semibold text-[#0F172A]">
+                High-Capex Lab, CNC &amp; Precision Asset Details (Optional)
+              </div>
+              <p className="text-xs text-slate-500">
+                Highlight costly rent-only instruments (spectrometers, microscopes, CNC, LiDAR) with asset valuation and calibration validity.
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-[#0F766E] cursor-pointer whitespace-nowrap shrink-0">
+              <input
+                type="checkbox"
+                checked={rentOnlyHighCapex}
+                onChange={(e) => setRentOnlyHighCapex(e.target.checked)}
+                className="rounded border-slate-300 text-[#0D9488]"
+              />
+              <span>Mark as High-Capex · Rent Only</span>
+            </label>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Estimated Replacement Value (₹, optional)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={replacementValueInr}
+                onChange={(e) => setReplacementValueInr(e.target.value)}
+                placeholder="e.g. 6800000 for ₹68L lab equipment"
+                className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-md bg-[#F8FAFC]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Calibration / Inspection Valid Until (optional)
+              </label>
+              <input
+                type="date"
+                value={calibrationValidUntil}
+                onChange={(e) => setCalibrationValidUntil(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md bg-[#F8FAFC]"
+              />
+            </div>
+          </div>
         </div>
 
         {error && <div className="p-3 bg-rose-50 border border-rose-200 rounded-md text-xs text-rose-800">{error}</div>}

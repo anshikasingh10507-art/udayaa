@@ -212,9 +212,80 @@ export function initializeDatabase(): void {
       created_at TEXT NOT NULL,
       resolved_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS escrow_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rental_request_id INTEGER NOT NULL UNIQUE REFERENCES rental_requests(id) ON DELETE CASCADE,
+      renter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      escrow_ref TEXT NOT NULL UNIQUE,
+      rental_amount REAL NOT NULL,
+      deposit_amount REAL NOT NULL DEFAULT 0,
+      platform_fee REAL NOT NULL DEFAULT 0,
+      total_funded REAL NOT NULL,
+      payment_method TEXT NOT NULL DEFAULT 'UPI Escrow',
+      status TEXT NOT NULL DEFAULT 'pending_funding' CHECK(status IN (
+        'pending_funding',
+        'funded_held',
+        'handover_confirmed',
+        'released_to_owner',
+        'refunded_to_renter',
+        'disputed'
+      )),
+      dispute_reason TEXT NOT NULL DEFAULT '',
+      funded_at TEXT,
+      handover_confirmed_at TEXT,
+      released_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS escrow_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      escrow_id INTEGER NOT NULL REFERENCES escrow_transactions(id) ON DELETE CASCADE,
+      actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      actor_role TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      note TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
+  runSchemaMigrations();
   seedInitialData();
+  seedExpandedMachineryAndBadges();
+}
+
+function hasColumn(table: string, column: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+}
+
+function runSchemaMigrations(): void {
+  if (!hasColumn('equipment_categories', 'sector')) {
+    db.exec(`ALTER TABLE equipment_categories ADD COLUMN sector TEXT NOT NULL DEFAULT 'construction'`);
+  }
+  if (!hasColumn('equipment_listings', 'is_verified_machinery')) {
+    db.exec(`ALTER TABLE equipment_listings ADD COLUMN is_verified_machinery INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!hasColumn('equipment_listings', 'verification_badge_tier')) {
+    db.exec(`ALTER TABLE equipment_listings ADD COLUMN verification_badge_tier TEXT NOT NULL DEFAULT 'unverified'`);
+  }
+  if (!hasColumn('equipment_listings', 'verification_certificate_id')) {
+    db.exec(`ALTER TABLE equipment_listings ADD COLUMN verification_certificate_id TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!hasColumn('equipment_listings', 'verified_at')) {
+    db.exec(`ALTER TABLE equipment_listings ADD COLUMN verified_at TEXT`);
+  }
+  if (!hasColumn('equipment_listings', 'calibration_valid_until')) {
+    db.exec(`ALTER TABLE equipment_listings ADD COLUMN calibration_valid_until TEXT`);
+  }
+  if (!hasColumn('equipment_listings', 'replacement_value_inr')) {
+    db.exec(`ALTER TABLE equipment_listings ADD COLUMN replacement_value_inr REAL`);
+  }
+  if (!hasColumn('equipment_listings', 'rent_only_high_capex')) {
+    db.exec(`ALTER TABLE equipment_listings ADD COLUMN rent_only_high_capex INTEGER NOT NULL DEFAULT 0`);
+  }
 }
 
 function hashDemoPassword(password: string): string {
@@ -712,3 +783,320 @@ function seedInitialData(): void {
     now
   );
 }
+
+function seedExpandedMachineryAndBadges(): void {
+  const now = new Date().toISOString();
+
+  // Ensure sector values are set on existing categories
+  db.prepare("UPDATE equipment_categories SET sector = 'future_expansion' WHERE group_type = 'future_expansion'").run();
+
+  // Insert specialized high-capex active categories idempotently
+  const newCategories: Array<[string, string, string, string, number]> = [
+    [
+      'lab-analytical',
+      'Analytical & Biotech Lab Equipment',
+      'laboratory',
+      'High-capex HPLC systems, mass spectrometers, and spectroscopy units available for short-term R&D rental between lab runs.',
+      8,
+    ],
+    [
+      'lab-biotech-microscopy',
+      'Confocal Microscopy & Genomics',
+      'laboratory',
+      'Motorized fluorescence/confocal microscopes, real-time qPCR thermocyclers, and sterile bio-imaging rigs.',
+      9,
+    ],
+    [
+      'industrial-cnc',
+      'Precision CNC & Metrology',
+      'precision_industrial',
+      'Multi-axis CNC machining centers, coordinate measuring machines (CMM), and fabrication hardware.',
+      10,
+    ],
+    [
+      'surveying-geotech',
+      '3D LiDAR & Geotechnical Survey',
+      'surveying_geotech',
+      'Terrestrial laser scanners, RTK survey rovers, and structural non-destructive testing instruments.',
+      11,
+    ],
+  ];
+
+  const insertCat = db.prepare(
+    `INSERT OR IGNORE INTO equipment_categories (slug, name, group_type, sector, description, sort_order, is_active)
+     VALUES (?, ?, 'construction', ?, ?, ?, 1)`
+  );
+  for (const [slug, name, sector, desc, sortOrder] of newCategories) {
+    insertCat.run(slug, name, sector, desc, sortOrder);
+    db.prepare('UPDATE equipment_categories SET sector = ?, is_active = 1 WHERE slug = ?').run(sector, slug);
+  }
+
+  // Ensure specialist lab/industrial owner account exists
+  let labOwner = db
+    .prepare('SELECT id FROM users WHERE email = ?')
+    .get('lab.partner@udaya.demo') as { id: number } | undefined;
+
+  if (!labOwner) {
+    const res = db
+      .prepare(
+        'INSERT INTO users (name, email, password_hash, role, phone, city, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(
+        'Dr. Ananya Deshmukh',
+        'lab.partner@udaya.demo',
+        hashDemoPassword('demo1234'),
+        'owner',
+        '+91 98231 66778',
+        'Pune',
+        now
+      );
+    labOwner = { id: Number(res.lastInsertRowid) };
+    db.prepare(
+      'INSERT OR IGNORE INTO owner_profiles (user_id, business_name, service_area, service_radius_km, bio, verified_contact) VALUES (?, ?, ?, ?, ?, 1)'
+    ).run(
+      labOwner.id,
+      'Deccan Bio-Analytical & Precision Labs (Sample)',
+      'Pune, Bengaluru, Mumbai, Pimpri-Chinchwad',
+      80,
+      'University spin-out and precision engineering consortium sharing idle high-capex analytical instruments and CNC capacity with vetted startups and researchers.',
+      1
+    );
+  }
+
+  const adminUser = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get() as { id: number } | undefined;
+  const adminId = adminUser?.id ?? null;
+
+  const getCatId = (slug: string) =>
+    (db.prepare('SELECT id FROM equipment_categories WHERE slug = ?').get(slug) as { id: number } | undefined)?.id;
+
+  const puneCoords = getCityCoordinates('Pune')!;
+  const pcmcCoords = getCityCoordinates('Pimpri-Chinchwad')!;
+  const blrCoords = getCityCoordinates('Bengaluru')!;
+  const mumbaiCoords = getCityCoordinates('Mumbai')!;
+
+  const specializedListings = [
+    {
+      slug: 'lab-analytical',
+      title: 'Waters / Agilent LC-MS & HPLC Analytical System',
+      makeModel: 'Acquity UPLC / Xevo TQ-S Mass Spec',
+      description:
+        'High-sensitivity liquid chromatography tandem mass spectrometer for pharma assay validation, impurity profiling, and biotech QA. Too costly (₹68L+ capex) for early-stage startups to purchase—rent by the day with calibrated columns and technician oversight.',
+      city: 'Pune',
+      area: 'Pashan Bio-Tech Innovation Park',
+      coords: puneCoords,
+      radius: 60,
+      dailyRate: 14500,
+      weeklyRate: 84000,
+      operatorAvail: 1,
+      operatorCharge: 3500,
+      transportAvail: 0,
+      transportCharge: null,
+      fuelPolicy: 'included',
+      fuelEstimate: 0,
+      deposit: 60000,
+      condition: 'NABL traceable calibration completed; ion source cleaned and mass-calibrated within ±0.01 Da.',
+      image: '/src/assets/images/eq_lab_hplc_spectrometer_1795217352610.jpg',
+      verified: 1,
+      tier: 'udaya_verified',
+      certId: 'UDY-CERT-LAB-2041',
+      calUntil: '2027-06-30',
+      replacementValue: 6800000,
+      rentOnly: 1,
+      maintDoc: 'nabl-hplc-calibration-2026.pdf',
+      maintStatus: 'Independently verified',
+    },
+    {
+      slug: 'lab-biotech-microscopy',
+      title: 'Nikon A1R Confocal Microscope & Eppendorf qPCR Suite',
+      makeModel: 'Nikon A1R HD25 + Mastercycler X50s',
+      description:
+        'Laser-scanning confocal fluorescence microscope on an anti-vibration optical table paired with a 96-well gradient thermal cycler. Ideal for university research cohorts, cellular imaging, and biotech startups requiring periodic high-resolution runs without ₹1.15 Cr capital lock-in.',
+      city: 'Bengaluru',
+      area: 'Electronic City Biotech Corridor',
+      coords: blrCoords,
+      radius: 50,
+      dailyRate: 22000,
+      weeklyRate: 125000,
+      operatorAvail: 1,
+      operatorCharge: 4000,
+      transportAvail: 0,
+      transportCharge: null,
+      fuelPolicy: 'included',
+      fuelEstimate: 0,
+      deposit: 90000,
+      condition: '405/488/561/640nm laser diodes aligned; piezo Z-stage verified to 15 nm repeatability.',
+      image: '/src/assets/images/eq_lab_confocal_microscope_1795217353612.jpg',
+      verified: 1,
+      tier: 'udaya_verified',
+      certId: 'UDY-CERT-BIO-3092',
+      calUntil: '2027-04-15',
+      replacementValue: 11500000,
+      rentOnly: 1,
+      maintDoc: 'optical-laser-alignment-cert.pdf',
+      maintStatus: 'Independently verified',
+    },
+    {
+      slug: 'industrial-cnc',
+      title: 'DMG MORI DMU 60 eVo 5-Axis Precision CNC Center',
+      makeModel: 'DMU 60 eVo Linear (5-Axis)',
+      description:
+        'Simultaneous 5-axis high-speed vertical machining center for aerospace brackets, EV battery housings, and medical implant prototyping. Rent idle night/weekend spindle capacity with certified CNC programmer support.',
+      city: 'Pimpri-Chinchwad',
+      area: 'Bhosari Precision Engineering Zone',
+      coords: pcmcCoords,
+      radius: 65,
+      dailyRate: 28500,
+      weeklyRate: 162000,
+      operatorAvail: 1,
+      operatorCharge: 4500,
+      transportAvail: 0,
+      transportCharge: null,
+      fuelPolicy: 'included',
+      fuelEstimate: 0,
+      deposit: 100000,
+      condition: 'Renishaw spindle probe calibrated; ballbar circularity test within 3 microns.',
+      image: '/src/assets/images/eq_industrial_cnc_machine_1795217351702.jpg',
+      verified: 1,
+      tier: 'udaya_verified',
+      certId: 'UDY-CERT-CNC-1184',
+      calUntil: '2027-05-20',
+      replacementValue: 14500000,
+      rentOnly: 1,
+      maintDoc: 'renishaw-ballbar-inspection.pdf',
+      maintStatus: 'Independently verified',
+    },
+    {
+      slug: 'surveying-geotech',
+      title: 'RIEGL VZ-400i 3D Terrestrial LiDAR Laser Scanner',
+      makeModel: 'RIEGL VZ-400i + Carbon Tripod',
+      description:
+        'Survey-grade 3D terrestrial laser scanner delivering 500,000 points/sec for bridge deformation mapping, BIM as-built modeling, and volumetric mining surveys. Delivered in shock-proof Pelican transit case.',
+      city: 'Mumbai',
+      area: 'Bandra Kurla Complex (BKC)',
+      coords: mumbaiCoords,
+      radius: 90,
+      dailyRate: 16800,
+      weeklyRate: 92000,
+      operatorAvail: 1,
+      operatorCharge: 3200,
+      transportAvail: 1,
+      transportCharge: 2200,
+      fuelPolicy: 'included',
+      fuelEstimate: 0,
+      deposit: 55000,
+      condition: 'Annual factory optics calibration certificate on file; dual lithium battery packs at 96% health.',
+      image: '/src/assets/images/eq_lidar_survey_scanner_1795217352658.jpg',
+      verified: 0,
+      tier: 'documents_reviewed',
+      certId: '',
+      calUntil: '2027-03-01',
+      replacementValue: 6200000,
+      rentOnly: 1,
+      maintDoc: 'lidar-optics-calibration-2026.pdf',
+      maintStatus: 'Documents submitted',
+    },
+  ];
+
+  const insertListing = db.prepare(`
+    INSERT INTO equipment_listings (
+      owner_id, category_id, title, make_model, description, location_city, location_area,
+      latitude, longitude, service_radius_km, daily_rate, weekly_rate,
+      operator_available, operator_daily_charge, transport_available, transport_base_charge,
+      fuel_policy, fuel_daily_estimate, deposit_amount, availability_status,
+      condition_summary, image_url, is_sample, is_removed,
+      is_verified_machinery, verification_badge_tier, verification_certificate_id,
+      verified_at, calibration_valid_until, replacement_value_inr, rent_only_high_capex,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const insertMaint = db.prepare(`
+    INSERT INTO maintenance_records (
+      equipment_id, condition_description, last_maintenance_date, checklist_json,
+      notes, document_name, document_data_url, verification_status, submitted_at, verified_by_admin_id
+    ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+  `);
+
+  for (const item of specializedListings) {
+    const exists = db.prepare('SELECT id FROM equipment_listings WHERE title = ?').get(item.title);
+    if (exists) continue;
+    const catId = getCatId(item.slug);
+    if (!catId) continue;
+
+    const eqRes = insertListing.run(
+      labOwner.id,
+      catId,
+      item.title,
+      item.makeModel,
+      item.description,
+      item.city,
+      item.area,
+      item.coords.lat,
+      item.coords.lon,
+      item.radius,
+      item.dailyRate,
+      item.weeklyRate,
+      item.operatorAvail,
+      item.operatorCharge,
+      item.transportAvail,
+      item.transportCharge,
+      item.fuelPolicy,
+      item.fuelEstimate,
+      item.deposit,
+      item.condition,
+      item.image,
+      item.verified,
+      item.tier,
+      item.certId,
+      item.verified ? now : null,
+      item.calUntil,
+      item.replacementValue,
+      item.rentOnly,
+      now,
+      now
+    );
+
+    const eqId = Number(eqRes.lastInsertRowid);
+    insertMaint.run(
+      eqId,
+      item.condition,
+      '2026-10-20',
+      JSON.stringify([
+        { item: 'Calibration & accuracy certification', passed: true },
+        { item: 'Power & safety interlocks check', passed: true },
+        { item: 'Preventive service log verified', passed: true },
+        { item: 'Cleanroom / transit protection ready', passed: true },
+      ]),
+      'High-capex instrument inspected prior to listing.',
+      item.maintDoc,
+      item.maintStatus,
+      now,
+      item.verified ? adminId : null
+    );
+  }
+
+  // Sync verified badge onto existing JCB 3CX (which already has Independently verified maintenance) & set replacement values on existing machines
+  db.prepare(
+    `UPDATE equipment_listings
+     SET is_verified_machinery = 1,
+         verification_badge_tier = 'udaya_verified',
+         verification_certificate_id = CASE WHEN verification_certificate_id = '' THEN 'UDY-CERT-CON-1001' ELSE verification_certificate_id END,
+         verified_at = COALESCE(verified_at, ?),
+         replacement_value_inr = COALESCE(replacement_value_inr, 3400000)
+     WHERE title LIKE 'JCB 3CX%'`
+  ).run(now);
+
+  db.prepare(
+    `UPDATE equipment_listings
+     SET verification_badge_tier = CASE WHEN verification_badge_tier = 'unverified' THEN 'documents_reviewed' ELSE verification_badge_tier END,
+         replacement_value_inr = COALESCE(replacement_value_inr, 1850000)
+     WHERE title LIKE 'Utility Loader Tractor%'`
+  ).run();
+
+  db.prepare(
+    `UPDATE equipment_listings
+     SET replacement_value_inr = COALESCE(replacement_value_inr, 2600000)
+     WHERE title LIKE '100 kW Soundproofed%'`
+  ).run();
+}
+

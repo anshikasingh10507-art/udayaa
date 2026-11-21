@@ -1,5 +1,49 @@
 import { CheckCircle2, Clock, FileText, AlertCircle, XCircle, Ban, ShieldCheck } from 'lucide-react';
-import type { BookingStatus } from '../types';
+import type { BookingStatus, VerificationBadgeTier } from '../types';
+import { useLanguage } from '../context/LanguageContext';
+
+export function VerifiedMachineryBadge({
+  isVerified,
+  tier,
+  certificateId,
+  compact = false,
+}: {
+  isVerified?: boolean;
+  tier?: VerificationBadgeTier | string | null;
+  certificateId?: string | null;
+  compact?: boolean;
+}) {
+  const { t } = useLanguage();
+  const effectiveTier = isVerified || tier === 'udaya_verified' ? 'udaya_verified' : tier || 'unverified';
+
+  if (effectiveTier === 'udaya_verified') {
+    return (
+      <span
+        title={certificateId ? `Udaya Verified Machinery · Cert ${certificateId}` : 'Udaya Verified Machinery'}
+        className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-800 whitespace-nowrap shrink-0"
+      >
+        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+        <span>{t('badge.verifiedMachinery')}</span>
+        {!compact && certificateId && (
+          <span className="font-mono text-[11px] font-normal text-emerald-700/90">
+            · {certificateId}
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  if (effectiveTier === 'documents_reviewed') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-teal-800 whitespace-nowrap shrink-0">
+        <FileText className="w-3.5 h-3.5 text-teal-600 shrink-0" aria-hidden="true" />
+        <span>{t('badge.documentsReviewed')}</span>
+      </span>
+    );
+  }
+
+  return null;
+}
 
 export function BookingStatusLabel({ status }: { status: BookingStatus | string }) {
   const configs: Record<string, { style: string; Icon: typeof Clock }> = {

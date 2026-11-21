@@ -1,0 +1,291 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions (Eight Pillars)
+    // ===============================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string
+        && id.size() >= 1
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+          || (
+            request.auth.token.email == 'anshikasingh10507@gmail.com'
+            && request.auth.token.email_verified == true
+          )
+        );
+    }
+
+    function isValidEmail(email) {
+      return email is string
+        && email.size() >= 3
+        && email.size() <= 160
+        && email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
+    }
+
+    function isValidOptionalUrl(url) {
+      return url is string
+        && url.size() <= 500
+        && (
+          url == ''
+          || url.matches('^https://.*')
+          || url.matches('^/.*')
+        );
+    }
+
+    function userExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function chatSessionExists(userId, sessionId) {
+      return exists(/databases/$(database)/documents/users/$(userId)/chatSessions/$(sessionId));
+    }
+
+    // ===============================================================
+    // Entity Schema Validators
+    // ===============================================================
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'email', 'role', 'preferredLanguage', 'city', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'photoURL', 'role', 'preferredLanguage', 'city', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid == userId
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && isValidEmail(data.email)
+        && (!('photoURL' in data) || isValidOptionalUrl(data.photoURL))
+        && data.role is string && data.role in ['renter', 'owner', 'admin']
+        && data.preferredLanguage is string && data.preferredLanguage.size() >= 2 && data.preferredLanguage.size() <= 10
+        && data.city is string && data.city.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSavedEquipment(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'equipmentId', 'title', 'categoryName', 'locationCity', 'dailyRate', 'imageUrl', 'isVerified', 'savedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'equipmentId', 'title', 'categoryName', 'locationCity', 'dailyRate', 'imageUrl', 'isVerified', 'savedAt'
+        ])
+        && data.userId is string && data.userId == userId
+        && data.equipmentId is int && data.equipmentId >= 1 && data.equipmentId <= 10000000
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.categoryName is string && data.categoryName.size() >= 1 && data.categoryName.size() <= 80
+        && data.locationCity is string && data.locationCity.size() >= 1 && data.locationCity.size() <= 80
+        && data.dailyRate is number && data.dailyRate >= 0 && data.dailyRate <= 10000000
+        && isValidOptionalUrl(data.imageUrl)
+        && data.isVerified is bool
+        && data.savedAt is timestamp;
+    }
+
+    function isValidChatSession(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'title', 'mode', 'languageCode', 'messageCount', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'title', 'mode', 'languageCode', 'messageCount', 'createdAt', 'updatedAt'
+        ])
+        && data.userId is string && data.userId == userId
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.mode is string && data.mode in ['general', 'fast', 'search', 'maps']
+        && data.languageCode is string && data.languageCode.size() >= 2 && data.languageCode.size() <= 10
+        && data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data, userId, sessionId) {
+      return data.keys().hasAll([
+          'userId', 'sessionId', 'role', 'text', 'mode', 'sourcesCount', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'sessionId', 'role', 'text', 'mode', 'sourcesCount', 'createdAt'
+        ])
+        && data.userId is string && data.userId == userId
+        && data.sessionId is string && data.sessionId == sessionId
+        && data.role is string && data.role in ['user', 'assistant']
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 12000
+        && data.mode is string && data.mode in ['general', 'fast', 'search', 'maps']
+        && data.sourcesCount is int && data.sourcesCount >= 0 && data.sourcesCount <= 50
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSiteNote(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'equipmentId', 'equipmentTitle', 'note', 'locationLabel', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'equipmentId', 'equipmentTitle', 'note', 'locationLabel', 'createdAt', 'updatedAt'
+        ])
+        && data.userId is string && data.userId == userId
+        && data.equipmentId is int && data.equipmentId >= 0 && data.equipmentId <= 10000000
+        && data.equipmentTitle is string && data.equipmentTitle.size() >= 1 && data.equipmentTitle.size() <= 160
+        && data.note is string && data.note.size() >= 1 && data.note.size() <= 1500
+        && data.locationLabel is string && data.locationLabel.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // ===============================================================
+    // Collections
+    // ===============================================================
+
+    match /admins/{userId} {
+      allow get, list: if isAdmin();
+      allow create, update, delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId)
+        && (isOwner(userId) || isAdmin())
+        && isValidUserProfile(request.resource.data, userId)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && (isAdmin() || request.resource.data.role in ['renter', 'owner']);
+      allow update: if isValidId(userId)
+        && (isOwner(userId) || isAdmin())
+        && isValidUserProfile(request.resource.data, userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            request.resource.data.role == resource.data.role
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'displayName', 'email', 'photoURL', 'preferredLanguage', 'city', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /savedEquipment/{equipmentId} {
+        allow get: if isValidId(userId) && isValidId(equipmentId)
+          && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId)
+          && (
+            isAdmin()
+            || (isOwner(userId) && resource.data.userId == request.auth.uid)
+          );
+        allow create: if isValidId(userId) && isValidId(equipmentId)
+          && isOwner(userId)
+          && userExists(userId)
+          && isValidSavedEquipment(request.resource.data, userId)
+          && request.resource.data.savedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(equipmentId)
+          && isOwner(userId)
+          && userExists(userId)
+          && isValidSavedEquipment(request.resource.data, userId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.equipmentId == resource.data.equipmentId
+          && request.resource.data.savedAt == resource.data.savedAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'title', 'categoryName', 'locationCity', 'dailyRate', 'imageUrl', 'isVerified'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(equipmentId)
+          && (isOwner(userId) || isAdmin());
+      }
+
+      match /chatSessions/{sessionId} {
+        allow get: if isValidId(userId) && isValidId(sessionId)
+          && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId)
+          && (
+            isAdmin()
+            || (isOwner(userId) && resource.data.userId == request.auth.uid)
+          );
+        allow create: if isValidId(userId) && isValidId(sessionId)
+          && isOwner(userId)
+          && userExists(userId)
+          && isValidChatSession(request.resource.data, userId)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(sessionId)
+          && isOwner(userId)
+          && userExists(userId)
+          && isValidChatSession(request.resource.data, userId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'title', 'mode', 'languageCode', 'messageCount', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(sessionId)
+          && (isOwner(userId) || isAdmin());
+
+        match /messages/{messageId} {
+          allow get: if isValidId(userId) && isValidId(sessionId) && isValidId(messageId)
+            && (isOwner(userId) || isAdmin());
+          allow list: if isValidId(userId) && isValidId(sessionId)
+            && (
+              isAdmin()
+              || (isOwner(userId) && resource.data.userId == request.auth.uid)
+            );
+          allow create: if isValidId(userId) && isValidId(sessionId) && isValidId(messageId)
+            && isOwner(userId)
+            && chatSessionExists(userId, sessionId)
+            && isValidChatMessage(request.resource.data, userId, sessionId)
+            && request.resource.data.createdAt == request.time;
+          allow update: if false;
+          allow delete: if isValidId(userId) && isValidId(sessionId) && isValidId(messageId)
+            && (isOwner(userId) || isAdmin());
+        }
+      }
+
+      match /siteNotes/{noteId} {
+        allow get: if isValidId(userId) && isValidId(noteId)
+          && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId)
+          && (
+            isAdmin()
+            || (isOwner(userId) && resource.data.userId == request.auth.uid)
+          );
+        allow create: if isValidId(userId) && isValidId(noteId)
+          && isOwner(userId)
+          && userExists(userId)
+          && isValidSiteNote(request.resource.data, userId)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(noteId)
+          && isOwner(userId)
+          && userExists(userId)
+          && isValidSiteNote(request.resource.data, userId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'equipmentId', 'equipmentTitle', 'note', 'locationLabel', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(noteId)
+          && (isOwner(userId) || isAdmin());
+      }
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,16 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, ArrowRight, CheckCircle2, FileText, ShieldCheck, Calendar, Truck } from 'lucide-react';
+import { Search, ArrowRight, CheckCircle2, FileText, ShieldCheck, Calendar, FlaskConical, Lock } from 'lucide-react';
 import { apiFetch, CITIES_LIST } from '../lib/api';
 import type { EquipmentCategory, EquipmentListing } from '../types';
 import { EquipmentCard, EquipmentImage } from '../components/EquipmentCard';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 
 export function HomePage() {
   const { user } = useAuth();
+  const { t } = useLanguage();
   const navigate = useNavigate();
   const [categories, setCategories] = useState<EquipmentCategory[]>([]);
   const [listings, setListings] = useState<EquipmentListing[]>([]);
+  const [highCapexListings, setHighCapexListings] = useState<EquipmentListing[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchCity, setSearchCity] = useState('');
@@ -22,7 +25,13 @@ export function HomePage() {
     ])
       .then(([catRes, eqRes]) => {
         setCategories(catRes.categories);
-        setListings(eqRes.equipment.slice(0, 6));
+        const all = eqRes.equipment || [];
+        const specialized = all.filter((item) => item.rent_only_high_capex);
+        const construction = all.filter((item) => !item.rent_only_high_capex);
+        setHighCapexListings(specialized.slice(0, 4));
+        // Show a balanced showcase: 3 verified/specialized + 3 construction listings
+        const featured = [...construction.slice(0, 3), ...specialized.slice(0, 3)];
+        setListings(featured.length > 0 ? featured : all.slice(0, 6));
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -39,6 +48,13 @@ export function HomePage() {
   const listEquipmentTarget = user?.role === 'owner' ? '/owner/listings/new' : '/login?role=owner';
   const postJobTarget = user ? '/renter/job-requests/new' : '/login?redirect=/renter/job-requests/new';
 
+  const sectorLabel = (sector?: string) => {
+    if (sector === 'laboratory') return 'Lab & Biotech';
+    if (sector === 'precision_industrial') return 'Precision CNC';
+    if (sector === 'surveying_geotech') return '3D Survey';
+    return 'Construction';
+  };
+
   return (
     <div>
       {/* 1. Hero Section — Split 2-column with balanced height and single dominant CTA */}
@@ -47,16 +63,16 @@ export function HomePage() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-stretch">
             <div className="lg:col-span-7 flex flex-col justify-center">
               <p className="text-sm font-medium text-[#0F766E] mb-3">
-                Zero-Idle Construction Equipment Network
+                {t('hero.kicker')}
               </p>
               <h1
                 className="font-display font-bold text-[#0F172A] tracking-tight leading-[1.1] max-w-2xl"
                 style={{ fontSize: 'clamp(2.25rem, 4vw, 3.5rem)', textWrap: 'balance' }}
               >
-                Make Equipment Work. Not Sit Idle.
+                {t('hero.title')}
               </h1>
               <p className="mt-4 text-base sm:text-lg text-slate-600 max-w-xl leading-relaxed">
-                Discover equipment for your next job, or connect your available equipment with people who need it.
+                {t('hero.subtitle')}
               </p>
 
               {/* Inline Search Bar */}
@@ -70,7 +86,7 @@ export function HomePage() {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search excavator, tractor, mixer, generator..."
+                    placeholder={t('hero.searchPlaceholder')}
                     aria-label="Search equipment"
                     className="w-full text-sm bg-transparent text-[#0F172A] placeholder:text-slate-400 focus:outline-none"
                   />
@@ -81,7 +97,7 @@ export function HomePage() {
                   aria-label="Select location city"
                   className="sm:w-44 px-3 bg-white border border-slate-200 rounded-md text-sm text-[#0F172A] min-h-[44px] focus:outline-none focus:ring-2 focus:ring-[#0D9488]"
                 >
-                  <option value="">All locations</option>
+                  <option value="">{t('hero.allLocations')}</option>
                   {CITIES_LIST.map((city) => (
                     <option key={city} value={city}>
                       {city}
@@ -92,7 +108,7 @@ export function HomePage() {
                   type="submit"
                   className="px-5 py-2.5 text-sm font-medium text-white bg-[#0D9488] hover:bg-[#0F766E] rounded-md transition-colors whitespace-nowrap shrink-0 min-h-[44px]"
                 >
-                  Find Equipment
+                  {t('hero.findEquipment')}
                 </button>
               </form>
 
@@ -102,13 +118,13 @@ export function HomePage() {
                   to={listEquipmentTarget}
                   className="inline-flex items-center gap-1.5 px-4 py-2 font-medium text-[#0F172A] bg-white border border-slate-300 hover:border-slate-400 rounded-md transition-colors whitespace-nowrap shrink-0"
                 >
-                  <span>List Your Equipment</span>
+                  <span>{t('hero.listEquipment')}</span>
                 </Link>
                 <Link
                   to={postJobTarget}
                   className="inline-flex items-center gap-1.5 px-4 py-2 font-medium text-[#C2410C] bg-orange-50 border border-orange-200 hover:bg-orange-100 rounded-md transition-colors whitespace-nowrap shrink-0"
                 >
-                  <span>Post a Job Request</span>
+                  <span>{t('hero.postJob')}</span>
                   <ArrowRight className="w-4 h-4 shrink-0" aria-hidden="true" />
                 </Link>
               </div>
@@ -121,10 +137,10 @@ export function HomePage() {
                   alt="Hydraulic excavator prepared on a commercial construction site"
                   className="w-full h-full object-cover"
                 />
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 via-slate-950/40 to-transparent p-5 text-white">
-                  <div className="text-xs font-medium text-teal-300">Core positioning</div>
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 via-slate-950/45 to-transparent p-5 text-white">
+                  <div className="text-xs font-medium text-teal-300">{t('hero.positioningLabel')}</div>
                   <div className="font-display text-base font-semibold mt-0.5">
-                    Udaya helps equipment find demand.
+                    {t('hero.positioningText')}
                   </div>
                 </div>
               </div>
@@ -133,17 +149,17 @@ export function HomePage() {
         </div>
       </section>
 
-      {/* 2. Equipment Categories */}
+      {/* 2. Equipment & Lab Categories */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 py-12">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
           <div>
-            <h2 className="font-display text-2xl font-bold text-[#0F172A]">Equipment Categories</h2>
-            <p className="text-sm text-slate-600 mt-1">
-              Focused on construction and site machinery first, structured to expand into tools and small-business equipment.
+            <h2 className="font-display text-2xl font-bold text-[#0F172A]">{t('home.categoriesTitle')}</h2>
+            <p className="text-sm text-slate-600 mt-1 max-w-2xl">
+              {t('home.categoriesSubtitle')}
             </p>
           </div>
           <Link to="/marketplace" className="text-sm font-medium text-[#0F766E] hover:underline whitespace-nowrap shrink-0">
-            View full marketplace
+            {t('home.viewMarketplace')}
           </Link>
         </div>
 
@@ -154,27 +170,65 @@ export function HomePage() {
               to={`/marketplace?category=${cat.slug}`}
               className="bg-white border border-slate-200 hover:border-[#0D9488] rounded-lg p-4 transition-colors flex flex-col justify-between gap-2"
             >
-              <div className="font-display font-semibold text-[#0F172A] text-base">{cat.name}</div>
+              <div>
+                <div className="text-[11px] font-medium text-[#0F766E] mb-1">
+                  {sectorLabel(cat.sector)}
+                </div>
+                <div className="font-display font-semibold text-[#0F172A] text-base">{cat.name}</div>
+              </div>
               <p className="text-xs text-slate-600 leading-relaxed line-clamp-2">{cat.description}</p>
             </Link>
           ))}
         </div>
       </section>
 
-      {/* 3. Selected Equipment Listings (Sample Data Clearly Marked) */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 py-10 border-t border-slate-200">
+      {/* 2.5 Rent-Only High-Capex Lab & Precision Machinery Showcase */}
+      {highCapexListings.length > 0 && (
+        <section className="bg-slate-50 border-y border-slate-200 py-12">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#0F766E] mb-1.5">
+                  <FlaskConical className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{t('badge.highCapexRentOnly')}</span>
+                </div>
+                <h2 className="font-display text-2xl font-bold text-[#0F172A]">{t('home.highCapexTitle')}</h2>
+                <p className="text-sm text-slate-600 mt-1 max-w-2xl">
+                  {t('home.highCapexSubtitle')}
+                </p>
+              </div>
+              <Link
+                to="/marketplace?rentOnlyHighCapex=true"
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-[#0F766E] hover:underline whitespace-nowrap shrink-0"
+              >
+                <span>{t('home.browseAll')}</span>
+                <ArrowRight className="w-4 h-4" aria-hidden="true" />
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+              {highCapexListings.map((item) => (
+                <EquipmentCard key={item.id} item={item} />
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* 3. Verified & Selected Equipment Listings */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 py-10">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
           <div>
-            <h2 className="font-display text-2xl font-bold text-[#0F172A]">Selected Equipment Listings</h2>
+            <h2 className="font-display text-2xl font-bold text-[#0F172A]">{t('home.featuredTitle')}</h2>
             <p className="text-sm text-slate-600 mt-1">
-              Demonstration inventory is clearly marked as sample listings. Owners can publish live equipment anytime.
+              {t('home.featuredSubtitle')}
             </p>
           </div>
           <Link
             to="/marketplace"
             className="inline-flex items-center gap-1.5 text-sm font-medium text-[#0F766E] hover:underline whitespace-nowrap shrink-0"
           >
-            <span>Browse all listings</span>
+            <span>{t('home.browseAll')}</span>
             <ArrowRight className="w-4 h-4" aria-hidden="true" />
           </Link>
         </div>
@@ -194,17 +248,16 @@ export function HomePage() {
         )}
       </section>
 
-      {/* 4. Zero-Idle Matching Workflow */}
+      {/* 4. Zero-Idle Matching & Escrow Workflow */}
       <section className="bg-[#0F172A] text-white py-14 mt-6">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="max-w-2xl mb-10">
-            <p className="text-xs font-medium text-teal-300">Zero-Idle Matching Workflow</p>
+            <p className="text-xs font-medium text-teal-300">{t('home.workflowKicker')}</p>
             <h2 className="font-display text-2xl sm:text-3xl font-bold mt-1.5">
-              Beyond passive browsing: connect jobs directly to idle machinery
+              {t('home.workflowTitle')}
             </h2>
             <p className="text-sm text-slate-300 mt-2 leading-relaxed">
-              Instead of calling dozens of yards to check if a machine is actually free, contractors describe the job once
-              and Udaya routes compatible opportunities to nearby owners.
+              {t('home.workflowSubtitle')}
             </p>
           </div>
 
@@ -212,19 +265,19 @@ export function HomePage() {
             {[
               {
                 step: '01. Post Job Requirements',
-                desc: 'Contractor enters equipment category, job city, start date, duration, target budget, and operator or delivery needs.',
+                desc: 'Enter equipment or lab instrument category, city, start date, duration, target budget, and operator/technician needs.',
               },
               {
-                step: '02. Transparent Rule Matching',
-                desc: 'Udaya checks category compatibility, non-conflicting calendar dates, service radius distance, and budget alignment with clear match reasons.',
+                step: '02. Verified Rule Matching',
+                desc: 'Udaya checks category compatibility, non-conflicting calendar dates, service radius, and verified inspection badges.',
               },
               {
-                step: '03. Owner Reviews & Quotes',
-                desc: 'Matched owners receive an in-app alert and confirm real availability, pricing, or propose an alternative machine.',
+                step: '03. Fund Udaya Escrow',
+                desc: 'Rental fee and refundable security deposit are locked in Udaya Escrow once accepted—blocking overlapping dates automatically.',
               },
               {
-                step: '04. Compare & Request Booking',
-                desc: 'Contractor compares itemized quotes side-by-side and submits a rental request through a clear status workflow.',
+                step: '04. Handover & Release',
+                desc: 'After verified handover and safe return inspection, funds release to the owner and the security deposit returns to the renter.',
               },
             ].map((item) => (
               <div key={item.step} className="bg-slate-800/70 border border-slate-700 rounded-lg p-5">
@@ -239,13 +292,13 @@ export function HomePage() {
               to={postJobTarget}
               className="px-5 py-2.5 text-sm font-medium bg-[#0D9488] hover:bg-[#0F766E] text-white rounded-md transition-colors whitespace-nowrap"
             >
-              Try Zero-Idle Job Request
+              {t('home.tryZeroIdle')}
             </Link>
             <Link
               to="/how-it-works"
               className="px-5 py-2.5 text-sm font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-md transition-colors whitespace-nowrap"
             >
-              Read Workflow Details
+              {t('home.readWorkflow')}
             </Link>
           </div>
         </div>
@@ -255,7 +308,7 @@ export function HomePage() {
       <section className="max-w-7xl mx-auto px-4 sm:px-6 py-14">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="bg-white border border-slate-200 rounded-lg p-6 sm:p-8">
-            <h2 className="font-display text-xl font-bold text-[#0F172A]">For Renters & Contractors</h2>
+            <h2 className="font-display text-xl font-bold text-[#0F172A]">For Renters, Labs & Contractors</h2>
             <ul className="mt-4 space-y-3 text-sm text-slate-700">
               <li className="flex items-start gap-2.5">
                 <CheckCircle2 className="w-4 h-4 text-[#0D9488] shrink-0 mt-0.5" aria-hidden="true" />

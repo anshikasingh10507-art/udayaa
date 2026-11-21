@@ -19,11 +19,19 @@ export interface OwnerProfile {
   verified_contact: number;
 }
 
+export type CategorySector =
+  | 'construction'
+  | 'laboratory'
+  | 'precision_industrial'
+  | 'surveying_geotech'
+  | 'future_expansion';
+
 export interface EquipmentCategory {
   id: number;
   slug: string;
   name: string;
   group_type: 'construction' | 'future_expansion';
+  sector: CategorySector;
   description: string;
   sort_order: number;
   is_active: number;
@@ -55,17 +63,22 @@ export interface AvailabilityBlock {
   booking_id: number | null;
 }
 
+export type VerificationBadgeTier = 'unverified' | 'documents_reviewed' | 'udaya_verified';
+
 export interface EquipmentListing {
   id: number;
   owner_id: number;
   category_id: number;
   category_name: string;
   category_slug: string;
+  category_sector?: CategorySector;
   title: string;
   make_model: string;
   description: string;
   location_city: string;
   location_area: string;
+  latitude?: number | null;
+  longitude?: number | null;
   service_radius_km: number;
   daily_rate: number;
   weekly_rate: number | null;
@@ -81,6 +94,13 @@ export interface EquipmentListing {
   image_url: string;
   is_sample: boolean;
   is_removed: boolean;
+  is_verified_machinery?: boolean;
+  verification_badge_tier?: VerificationBadgeTier;
+  verification_certificate_id?: string;
+  verified_at?: string | null;
+  calibration_valid_until?: string | null;
+  replacement_value_inr?: number | null;
+  rent_only_high_capex?: boolean;
   owner_name?: string;
   owner_city?: string;
   owner_phone?: string;
@@ -177,6 +197,52 @@ export type BookingStatus =
   | 'Cancelled'
   | 'Completed';
 
+export type EscrowStatus =
+  | 'pending_funding'
+  | 'funded_held'
+  | 'handover_confirmed'
+  | 'released_to_owner'
+  | 'refunded_to_renter'
+  | 'disputed';
+
+export interface EscrowEvent {
+  id: number;
+  escrow_id: number;
+  actor_user_id: number | null;
+  actor_name?: string | null;
+  actor_role: string;
+  event_type: string;
+  note: string;
+  created_at: string;
+}
+
+export interface EscrowTransaction {
+  id: number;
+  rental_request_id: number;
+  renter_id: number;
+  owner_id: number;
+  escrow_ref: string;
+  rental_amount: number;
+  deposit_amount: number;
+  platform_fee: number;
+  total_funded: number;
+  payment_method: string;
+  status: EscrowStatus;
+  dispute_reason: string;
+  funded_at: string | null;
+  handover_confirmed_at: string | null;
+  released_at: string | null;
+  created_at: string;
+  updated_at: string;
+  // Admin view joins
+  equipment_title?: string;
+  renter_name?: string;
+  owner_name?: string;
+  start_date?: string;
+  end_date?: string;
+  booking_status?: string;
+}
+
 export interface RentalRequest {
   id: number;
   equipment_id: number;
@@ -208,11 +274,24 @@ export interface RentalRequest {
   image_url: string;
   listing_daily_rate: number;
   is_sample: number;
+  is_verified_machinery?: number;
   renter_name: string;
   renter_phone: string;
   owner_name: string;
   owner_phone: string;
   business_name: string;
+  escrow_id?: number | null;
+  escrow_ref?: string | null;
+  escrow_status?: EscrowStatus | null;
+  escrow_rental_amount?: number | null;
+  escrow_deposit_amount?: number | null;
+  escrow_platform_fee?: number | null;
+  escrow_total_funded?: number | null;
+  escrow_payment_method?: string | null;
+  escrow_funded_at?: string | null;
+  escrow_handover_confirmed_at?: string | null;
+  escrow_released_at?: string | null;
+  escrow_dispute_reason?: string | null;
   created_at: string;
   updated_at: string;
 }

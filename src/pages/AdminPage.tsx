@@ -1,8 +1,30 @@
 import { useEffect, useState, useCallback } from 'react';
+import { ShieldCheck } from 'lucide-react';
 import { apiFetch, formatINR } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
-import type { ReportItem } from '../types';
-import { MaintenanceVerificationLabel } from '../components/StatusLabel';
+import type { EscrowStatus, ReportItem } from '../types';
+import { MaintenanceVerificationLabel, VerifiedMachineryBadge } from '../components/StatusLabel';
+import { EscrowStatusBadge } from '../components/EscrowPanel';
+
+interface AdminEscrowRow {
+  id: number;
+  rental_request_id: number;
+  escrow_ref: string;
+  rental_amount: number;
+  deposit_amount: number;
+  platform_fee: number;
+  total_funded: number;
+  payment_method: string;
+  status: EscrowStatus;
+  dispute_reason: string;
+  equipment_title: string;
+  renter_name: string;
+  owner_name: string;
+  start_date: string;
+  end_date: string;
+  booking_status: string;
+  created_at: string;
+}
 
 interface AdminOverview {
   users: Array<{ id: number; name: string; email: string; role: string; city: string; created_at: string }>;
@@ -14,7 +36,12 @@ interface AdminOverview {
     availability_status: string;
     is_sample: number;
     is_removed: number;
+    is_verified_machinery: number;
+    verification_badge_tier: string;
+    verification_certificate_id: string;
+    replacement_value_inr: number | null;
     category_name: string;
+    category_sector?: string;
     owner_name: string;
     owner_email: string;
   }>;
@@ -29,12 +56,13 @@ interface AdminOverview {
     verification_status: string;
     submitted_at: string;
   }>;
+  escrowTransactions: AdminEscrowRow[];
 }
 
 export function AdminPage() {
   const { user } = useAuth();
   const [data, setData] = useState<AdminOverview | null>(null);
-  const [tab, setTab] = useState<'reports' | 'listings' | 'maintenance' | 'users'>('reports');
+  const [tab, setTab] = useState<'reports' | 'listings' | 'escrow' | 'maintenance' | 'users'>('listings');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
@@ -66,7 +94,8 @@ export function AdminPage() {
         <div className="bg-white border border-rose-200 rounded-lg p-8 text-center">
           <h1 className="font-display text-xl font-bold text-[#0F172A]">Administrator Access Required</h1>
           <p className="text-sm text-slate-600 mt-2">
-            Administrative moderation and platform records are restricted to authorized administrator accounts.
+            Administrative moderation, Verified Machinery Badges, and Escrow dispute controls are restricted to
+            authorized administrator accounts.
           </p>
         </div>
       </div>
@@ -97,12 +126,55 @@ export function AdminPage() {
     await load();
   };
 
+  const handleToggleVerifiedBadge = async (listingId: number, grant: boolean) => {
+    setMsg('');
+    setError('');
+    try {
+      const res = await apiFetch<{ certificateId?: string }>(`/api/admin/equipment/${listingId}/verify`, {
+        method: 'PATCH',
+        body: JSON.stringify({ verified: grant }),
+      });
+      setMsg(
+        grant
+          ? `Udaya Verified Machinery Badge granted to listing #${listingId} (${res.certificateId}).`
+          : `Verified Machinery Badge revoked for listing #${listingId}.`
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to update verification badge.');
+    }
+  };
+
+  const handleResolveEscrow = async (
+    bookingId: number,
+    resolution: 'released_to_owner' | 'refunded_to_renter'
+  ) => {
+    setMsg('');
+    setError('');
+    try {
+      await apiFetch(`/api/admin/escrow/${bookingId}/resolve`, {
+        method: 'POST',
+        body: JSON.stringify({
+          resolution,
+          note:
+            resolution === 'released_to_owner'
+              ? 'Administrator verified completion and released held escrow funds to owner.'
+              : 'Administrator reviewed dispute and issued full escrow refund to renter.',
+        }),
+      });
+      setMsg(`Escrow for Booking #${bookingId} resolved (${resolution.replace(/_/g, ' ')}).`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to resolve escrow transaction.');
+    }
+  };
+
   const handleVerifyMaint = async (maintId: number) => {
     setMsg('');
     setError('');
     try {
       await apiFetch(`/api/admin/maintenance/${maintId}/verify`, { method: 'PATCH' });
-      setMsg(`Maintenance record #${maintId} marked Independently verified.`);
+      setMsg(`Maintenance record #${maintId} marked Independently verified & badge granted.`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to verify record.');
@@ -113,11 +185,11 @@ export function AdminPage() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6">
       <div>
         <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0F172A]">
-          Administrator Moderation & Records
+          Administrator Moderation, Badges &amp; Escrow Console
         </h1>
         <p className="text-sm text-slate-600 mt-1">
-          Review reported listings, manage fraudulent or inappropriate inventory, inspect records, and verify submitted
-          maintenance documents.
+          Grant or revoke Verified Machinery Badges, resolve frozen Escrow disputes, verify maintenance certificates,
+          and moderate reported listings.
         </p>
       </div>
 
@@ -128,15 +200,16 @@ export function AdminPage() {
 
       <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg w-fit">
         {[
+          ['listings', `Listings & Badges (${data?.listings.length ?? 0})`],
+          ['escrow', `Escrow & Disputes (${data?.escrowTransactions?.length ?? 0})`],
           ['reports', `Reports (${data?.reports.length ?? 0})`],
-          ['listings', `Listings (${data?.listings.length ?? 0})`],
           ['maintenance', `Maintenance Verification (${data?.maintenanceSubmissions.length ?? 0})`],
           ['users', `Users (${data?.users.length ?? 0})`],
         ].map(([k, label]) => (
           <button
             key={k}
             type="button"
-            onClick={() => setTab(k as 'reports' | 'listings' | 'maintenance' | 'users')}
+            onClick={() => setTab(k as 'reports' | 'listings' | 'escrow' | 'maintenance' | 'users')}
             className={`px-4 py-1.5 text-xs font-medium rounded-md transition-colors ${
               tab === k ? 'bg-white text-[#0F172A] shadow-sm' : 'text-slate-600 hover:text-[#0F172A]'
             }`}
@@ -198,50 +271,139 @@ export function AdminPage() {
                   <tr>
                     <th className="py-3 px-4 font-medium">ID</th>
                     <th className="py-3 px-4 font-medium">Equipment</th>
-                    <th className="py-3 px-4 font-medium">Owner</th>
-                    <th className="py-3 px-4 font-medium">City</th>
+                    <th className="py-3 px-4 font-medium">Owner &amp; City</th>
                     <th className="py-3 px-4 font-medium text-right">Daily Rate</th>
-                    <th className="py-3 px-4 font-medium">State</th>
-                    <th className="py-3 px-4 font-medium text-right">Action</th>
+                    <th className="py-3 px-4 font-medium">Verification Badge</th>
+                    <th className="py-3 px-4 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {data.listings.map((l) => (
-                    <tr key={l.id} className="hover:bg-slate-50/50">
-                      <td className="py-3 px-4 font-mono text-xs">{l.id}</td>
-                      <td className="py-3 px-4">
-                        <div className="font-medium text-[#0F172A]">{l.title}</div>
-                        <div className="text-xs text-slate-500">
-                          {l.category_name} {l.is_sample ? '· Sample' : ''}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-xs text-slate-700">{l.owner_name}</td>
-                      <td className="py-3 px-4 text-xs text-slate-700">{l.location_city}</td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums">{formatINR(l.daily_rate)}</td>
-                      <td className="py-3 px-4 text-xs">
-                        {l.is_removed ? (
-                          <span className="text-rose-700 font-medium">Removed by admin</span>
-                        ) : (
-                          <span className="text-slate-700">{l.availability_status}</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleListing(l.id, !l.is_removed)}
-                          className={`px-3 py-1 text-xs font-medium rounded border ${
-                            l.is_removed
-                              ? 'border-slate-300 text-slate-700 hover:bg-slate-50'
-                              : 'border-rose-200 text-rose-700 hover:bg-rose-50'
-                          }`}
-                        >
-                          {l.is_removed ? 'Restore' : 'Remove'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {data.listings.map((l) => {
+                    const isVerified = Boolean(l.is_verified_machinery);
+                    return (
+                      <tr key={l.id} className="hover:bg-slate-50/50">
+                        <td className="py-3 px-4 font-mono text-xs">{l.id}</td>
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-[#0F172A]">{l.title}</div>
+                          <div className="text-xs text-slate-500">
+                            {l.category_name} {l.is_sample ? '· Sample' : ''}
+                            {l.is_removed ? ' · Removed by admin' : ''}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-xs text-slate-700">
+                          <div>{l.owner_name}</div>
+                          <div className="text-slate-500">{l.location_city}</div>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono tabular-nums">{formatINR(l.daily_rate)}</td>
+                        <td className="py-3 px-4 text-xs">
+                          {isVerified ? (
+                            <VerifiedMachineryBadge
+                              isVerified
+                              tier={l.verification_badge_tier}
+                              certificateId={l.verification_certificate_id}
+                            />
+                          ) : (
+                            <span className="text-slate-500 capitalize">
+                              {l.verification_badge_tier?.replace('_', ' ') || 'Unverified'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleVerifiedBadge(l.id, !isVerified)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded border whitespace-nowrap ${
+                                isVerified
+                                  ? 'border-amber-300 text-amber-800 hover:bg-amber-50'
+                                  : 'border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100'
+                              }`}
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>{isVerified ? 'Revoke Badge' : 'Grant Verified Badge'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleListing(l.id, !l.is_removed)}
+                              className={`px-2.5 py-1 text-xs font-medium rounded border whitespace-nowrap ${
+                                l.is_removed
+                                  ? 'border-slate-300 text-slate-700 hover:bg-slate-50'
+                                  : 'border-rose-200 text-rose-700 hover:bg-rose-50'
+                              }`}
+                            >
+                              {l.is_removed ? 'Restore' : 'Remove'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {tab === 'escrow' && (
+            <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+              {!data.escrowTransactions || data.escrowTransactions.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-600">
+                  No escrow transactions funded yet. Renters can fund Escrow from their Bookings workspace.
+                </div>
+              ) : (
+                data.escrowTransactions.map((e) => {
+                  const canResolve = ['funded_held', 'handover_confirmed', 'disputed'].includes(e.status);
+                  return (
+                    <div key={e.id} className="p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                          <span className="font-mono font-semibold text-[#0F172A]">{e.escrow_ref}</span>
+                          <span>·</span>
+                          <span>Booking #{e.rental_request_id}</span>
+                          <span>·</span>
+                          <span>
+                            {e.start_date} to {e.end_date}
+                          </span>
+                          <span>·</span>
+                          <EscrowStatusBadge status={e.status} />
+                        </div>
+                        <div className="font-semibold text-sm text-[#0F172A]">{e.equipment_title}</div>
+                        <div className="text-xs text-slate-600">
+                          Renter: <span className="font-medium text-[#0F172A]">{e.renter_name}</span> → Owner:{' '}
+                          <span className="font-medium text-[#0F172A]">{e.owner_name}</span> · Method: {e.payment_method}
+                        </div>
+                        <div className="text-xs font-mono tabular-nums text-slate-700">
+                          Total Held: {formatINR(e.total_funded)} (Rental {formatINR(e.rental_amount)} + Deposit{' '}
+                          {formatINR(e.deposit_amount)} · 5% Fee {formatINR(e.platform_fee)})
+                        </div>
+                        {e.dispute_reason && (
+                          <div className="p-2.5 bg-rose-50 border border-rose-200 rounded text-xs text-rose-800">
+                            <span className="font-semibold">Dispute reason:</span> {e.dispute_reason}
+                          </div>
+                        )}
+                      </div>
+
+                      {canResolve && (
+                        <div className="flex flex-wrap gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleResolveEscrow(e.rental_request_id, 'released_to_owner')}
+                            className="px-3 py-1.5 text-xs font-medium text-white bg-[#0D9488] hover:bg-[#0F766E] rounded whitespace-nowrap"
+                          >
+                            Release to Owner
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleResolveEscrow(e.rental_request_id, 'refunded_to_renter')}
+                            className="px-3 py-1.5 text-xs font-medium text-rose-700 border border-rose-200 hover:bg-rose-50 rounded whitespace-nowrap"
+                          >
+                            Refund to Renter
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           )}
 

@@ -1,0 +1,109 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated Udaya user profile stored privately per UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "role": { "type": "string", "enum": ["renter", "owner", "admin"] },
+        "preferredLanguage": { "type": "string", "minLength": 2, "maxLength": 10 },
+        "city": { "type": "string", "maxLength": 80 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "role", "preferredLanguage", "city", "createdAt", "updatedAt"]
+    },
+    "SavedEquipment": {
+      "title": "SavedEquipment",
+      "description": "Equipment listing bookmarked by a signed-in user for cross-device watchlist persistence.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "equipmentId": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "categoryName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "locationCity": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "dailyRate": { "type": "number", "minimum": 0, "maximum": 10000000 },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "isVerified": { "type": "boolean" },
+        "savedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "equipmentId", "title", "categoryName", "locationCity", "dailyRate", "imageUrl", "isVerified", "savedAt"]
+    },
+    "ChatSession": {
+      "title": "ChatSession",
+      "description": "Persisted multi-turn AI equipment concierge conversation metadata.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "mode": { "type": "string", "enum": ["general", "fast", "search", "maps"] },
+        "languageCode": { "type": "string", "minLength": 2, "maxLength": 10 },
+        "messageCount": { "type": "integer", "minimum": 0, "maximum": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "mode", "languageCode", "messageCount", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Immutable message turn inside a user's AI concierge session.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sessionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "mode": { "type": "string", "enum": ["general", "fast", "search", "maps"] },
+        "sourcesCount": { "type": "integer", "minimum": 0, "maximum": 50 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "sessionId", "role", "text", "mode", "sourcesCount", "createdAt"]
+    },
+    "SiteNote": {
+      "title": "SiteNote",
+      "description": "User-authored inspection or job-site planning note linked to an equipment listing.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "equipmentId": { "type": "integer", "minimum": 0 },
+        "equipmentTitle": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "note": { "type": "string", "minLength": 1, "maxLength": 1500 },
+        "locationLabel": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "equipmentId", "equipmentTitle", "note", "locationLabel", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Private user profile document keyed by Firebase Auth UID."
+    },
+    "/users/{userId}/savedEquipment/{equipmentId}": {
+      "schema": "SavedEquipment",
+      "description": "User's bookmarked machinery and lab equipment listings."
+    },
+    "/users/{userId}/chatSessions/{sessionId}": {
+      "schema": "ChatSession",
+      "description": "User's saved multi-turn Gemini AI assistant conversations."
+    },
+    "/users/{userId}/chatSessions/{sessionId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Individual messages inside a user's AI assistant conversation."
+    },
+    "/users/{userId}/siteNotes/{noteId}": {
+      "schema": "SiteNote",
+      "description": "User's site planning and equipment inspection notes."
+    },
+    "/admins/{userId}": {
+      "schema": "UserProfile",
+      "description": "Admin role directory managed strictly by administrators."
+    }
+  }
+}

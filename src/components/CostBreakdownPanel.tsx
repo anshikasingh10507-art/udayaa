@@ -114,10 +114,10 @@ export function CostBreakdownPanel({
           </span>
         </div>
         <div className="flex items-start gap-2 mt-1.5 text-xs text-slate-600">
-          <Info className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" aria-hidden="true" />
+          <Info className="w-3.5 h-3.5 text-[#0F766E] shrink-0 mt-0.5" aria-hidden="true" />
           <span>
-            {depositStatus} · Held separately from rental expense and payable prior to dispatch/handover; refundable
-            after equipment return inspection. Payment is handled outside the application during the demonstration phase.
+            {depositStatus} · Held separately inside Udaya Escrow alongside rental funds prior to handover, and
+            automatically refunded to the renter after return inspection and release.
           </span>
         </div>
       </div>

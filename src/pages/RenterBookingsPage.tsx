@@ -2,8 +2,9 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { apiFetch, formatINR } from '../lib/api';
 import type { RentalRequest } from '../types';
-import { BookingStatusLabel } from '../components/StatusLabel';
+import { BookingStatusLabel, VerifiedMachineryBadge } from '../components/StatusLabel';
 import { CostBreakdownPanel } from '../components/CostBreakdownPanel';
+import { EscrowWorkflowPanel } from '../components/EscrowPanel';
 
 export function RenterBookingsPage() {
   const [bookings, setBookings] = useState<RentalRequest[]>([]);
@@ -70,9 +71,9 @@ export function RenterBookingsPage() {
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[#0F172A]">Rental Requests & Booking Status</h1>
+          <h1 className="font-display text-2xl font-bold text-[#0F172A]">Rental Requests &amp; Escrow Payments</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Track status progression, compare owner-confirmed charges, and message equipment owners.
+            Track status progression, fund Udaya Escrow safely, confirm handover/return, and message equipment owners.
           </p>
         </div>
         <Link
@@ -122,12 +123,15 @@ export function RenterBookingsPage() {
                       <span>·</span>
                       <span>{b.job_location}</span>
                     </div>
-                    <Link
-                      to={`/equipment/${b.equipment_id}`}
-                      className="font-display text-lg font-bold text-[#0F172A] hover:text-[#0F766E] mt-1 inline-block"
-                    >
-                      {b.equipment_title}
-                    </Link>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <Link
+                        to={`/equipment/${b.equipment_id}`}
+                        className="font-display text-lg font-bold text-[#0F172A] hover:text-[#0F766E]"
+                      >
+                        {b.equipment_title}
+                      </Link>
+                      {b.is_verified_machinery && <VerifiedMachineryBadge isVerified compact />}
+                    </div>
                     <div className="text-sm text-slate-700 mt-1 font-mono tabular-nums">
                       {b.start_date} to {b.end_date} ({b.duration_days} {b.duration_days === 1 ? 'day' : 'days'})
                     </div>
@@ -192,6 +196,11 @@ export function RenterBookingsPage() {
                     )}
                   </div>
                 </div>
+
+                {/* Udaya Escrow Protection & Milestone Settlement Panel */}
+                {(!['Cancelled', 'Rejected'].includes(b.status) || Boolean(b.escrow_status)) && (
+                  <EscrowWorkflowPanel booking={b} role="renter" onUpdated={loadBookings} />
+                )}
 
                 {expandedCostId === b.id && (
                   <div className="pt-2">

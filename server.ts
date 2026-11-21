@@ -1,6 +1,10 @@
 import express from 'express';
+import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { WebSocketServer, WebSocket } from 'ws';
+import { Modality } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import { db, initializeDatabase } from './server/db.ts';
 import {
@@ -17,11 +21,20 @@ import {
 import type { AuthedRequest } from './server/auth.ts';
 import { getCityCoordinates, SUPPORTED_CITIES } from './server/geo.ts';
 import { addDaysToIsoDate, hasEquipmentDateConflict, runRuleBasedMatching } from './server/matching.ts';
+import {
+  getGeminiClient,
+  runGroundedChatWithGemini,
+  runVoiceAssistantWithGemini,
+  synthesizeSpeechWithGemini,
+  transcribeAudioWithGemini,
+  type GroundedChatMode,
+  type GroundedChatTurn,
+} from './server/gemini.ts';
 
 initializeDatabase();
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = process.env.NODE_ENV === 'production' ? Number(process.env.PORT) || 3000 : 3000;
 
 app.use(express.json({ limit: '6mb' }));
 app.use(authenticateOptional);
@@ -61,6 +74,8 @@ function enrichEquipmentRow(row: Record<string, unknown>) {
     transport_available: Boolean(row.transport_available),
     is_sample: Boolean(row.is_sample),
     is_removed: Boolean(row.is_removed),
+    is_verified_machinery: Boolean(row.is_verified_machinery),
+    rent_only_high_capex: Boolean(row.rent_only_high_capex),
     latest_maintenance: maint
       ? {
           ...maint,
@@ -86,7 +101,7 @@ app.get('/api/categories', (req, res) => {
   const includeFuture = req.query.includeFuture === 'true';
   const rows = includeFuture
     ? db.prepare('SELECT * FROM equipment_categories ORDER BY sort_order ASC').all()
-    : db.prepare("SELECT * FROM equipment_categories WHERE group_type = 'construction' ORDER BY sort_order ASC").all();
+    : db.prepare('SELECT * FROM equipment_categories WHERE is_active = 1 ORDER BY sort_order ASC').all();
   res.json({ categories: rows });
 });
 
@@ -259,17 +274,20 @@ app.put('/api/owner/profile', requireRole('owner'), (req: AuthedRequest, res) =>
 app.get('/api/equipment', (req, res) => {
   const q = String(req.query.q || '').trim().toLowerCase();
   const category = String(req.query.category || '').trim();
+  const sector = String(req.query.sector || '').trim();
   const city = String(req.query.city || '').trim().toLowerCase();
   const maxRate = req.query.maxRate ? Number(req.query.maxRate) : null;
   const availableOnly = req.query.availableOnly === 'true';
   const operatorOnly = req.query.operatorOnly === 'true';
   const transportOnly = req.query.transportOnly === 'true';
+  const verifiedOnly = req.query.verifiedOnly === 'true';
+  const rentOnlyCapex = req.query.rentOnlyHighCapex === 'true';
   const startDate = String(req.query.startDate || '').trim();
   const durationDays = Number(req.query.durationDays || 1);
 
   const rows = db
     .prepare(
-      `SELECT l.*, c.name as category_name, c.slug as category_slug,
+      `SELECT l.*, c.name as category_name, c.slug as category_slug, c.sector as category_sector,
               u.name as owner_name, u.city as owner_city,
               COALESCE(op.business_name, u.name) as business_name
        FROM equipment_listings l
@@ -277,7 +295,7 @@ app.get('/api/equipment', (req, res) => {
        JOIN users u ON u.id = l.owner_id
        LEFT JOIN owner_profiles op ON op.user_id = l.owner_id
        WHERE l.is_removed = 0 AND l.availability_status != 'paused'
-       ORDER BY l.is_sample ASC, l.id DESC`
+       ORDER BY l.is_verified_machinery DESC, l.is_sample ASC, l.id DESC`
     )
     .all() as Array<Record<string, unknown>>;
 
@@ -285,7 +303,12 @@ app.get('/api/equipment', (req, res) => {
     if (availableOnly && r.availability_status !== 'available') return false;
     if (operatorOnly && !r.operator_available) return false;
     if (transportOnly && !r.transport_available) return false;
+    if (verifiedOnly && !r.is_verified_machinery) return false;
+    if (rentOnlyCapex && !r.rent_only_high_capex) return false;
     if (maxRate && !Number.isNaN(maxRate) && Number(r.daily_rate) > maxRate) return false;
+    if (sector && sector !== 'all') {
+      if (String(r.category_sector) !== sector) return false;
+    }
     if (category && category !== 'all') {
       if (String(r.category_slug) !== category && String(r.category_id) !== category) return false;
     }
@@ -296,7 +319,7 @@ app.get('/api/equipment', (req, res) => {
       if (!locMatch) return false;
     }
     if (q) {
-      const hay = `${r.title} ${r.make_model} ${r.description} ${r.location_city} ${r.location_area} ${r.category_name}`.toLowerCase();
+      const hay = `${r.title} ${r.make_model} ${r.description} ${r.location_city} ${r.location_area} ${r.category_name} ${r.category_sector}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     if (startDate && availableOnly) {
@@ -314,7 +337,7 @@ app.get('/api/equipment/:id', (req: AuthedRequest, res) => {
   const id = Number(req.params.id);
   const row = db
     .prepare(
-      `SELECT l.*, c.name as category_name, c.slug as category_slug,
+      `SELECT l.*, c.name as category_name, c.slug as category_slug, c.sector as category_sector,
               u.name as owner_name, u.city as owner_city, u.phone as owner_phone,
               COALESCE(op.business_name, u.name) as business_name,
               op.service_area as owner_service_area,
@@ -393,9 +416,13 @@ app.post('/api/equipment', requireRole('owner'), (req: AuthedRequest, res) => {
     'loaders-earthmoving': '/src/assets/images/eq_skid_loader_1794920313017.jpg',
     'concrete-mixers': '/src/assets/images/eq_concrete_mixer_1794920312061.jpg',
     generators: '/src/assets/images/eq_diesel_generator_1794920312999.jpg',
+    'lab-analytical': '/src/assets/images/eq_lab_hplc_spectrometer_1795217352610.jpg',
+    'lab-biotech-microscopy': '/src/assets/images/eq_lab_confocal_microscope_1795217353612.jpg',
+    'industrial-cnc': '/src/assets/images/eq_industrial_cnc_machine_1795217351702.jpg',
+    'surveying-geotech': '/src/assets/images/eq_lidar_survey_scanner_1795217352658.jpg',
   };
-  const cat = db.prepare('SELECT slug FROM equipment_categories WHERE id = ?').get(Number(b.categoryId)) as
-    | { slug: string }
+  const cat = db.prepare('SELECT slug, sector FROM equipment_categories WHERE id = ?').get(Number(b.categoryId)) as
+    | { slug: string; sector: string }
     | undefined;
   if (!cat) {
     res.status(400).json({ error: 'Invalid equipment category.' });
@@ -414,8 +441,10 @@ app.post('/api/equipment', requireRole('owner'), (req: AuthedRequest, res) => {
         latitude, longitude, service_radius_km, daily_rate, weekly_rate,
         operator_available, operator_daily_charge, transport_available, transport_base_charge,
         fuel_policy, fuel_daily_estimate, deposit_amount, availability_status,
-        condition_summary, image_url, is_sample, is_removed, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`
+        condition_summary, image_url, is_sample, is_removed,
+        replacement_value_inr, calibration_valid_until, rent_only_high_capex,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`
     )
     .run(
       req.user!.id,
@@ -444,13 +473,16 @@ app.post('/api/equipment', requireRole('owner'), (req: AuthedRequest, res) => {
       ['available', 'paused', 'maintenance'].includes(b.availabilityStatus) ? b.availabilityStatus : 'available',
       String(b.conditionSummary || '').trim(),
       imageUrl,
+      b.replacementValueInr !== '' && b.replacementValueInr != null ? Number(b.replacementValueInr) : null,
+      b.calibrationValidUntil ? String(b.calibrationValidUntil).trim() : null,
+      b.rentOnlyHighCapex || cat.sector !== 'construction' ? 1 : 0,
       now,
       now
     );
 
   const created = db
     .prepare(
-      `SELECT l.*, c.name as category_name, c.slug as category_slug
+      `SELECT l.*, c.name as category_name, c.slug as category_slug, c.sector as category_sector
        FROM equipment_listings l
        JOIN equipment_categories c ON c.id = l.category_id
        WHERE l.id = ?`
@@ -502,6 +534,9 @@ app.put('/api/equipment/:id', requireAuth, (req: AuthedRequest, res) => {
       availability_status = COALESCE(?, availability_status),
       condition_summary = COALESCE(?, condition_summary),
       image_url = COALESCE(?, image_url),
+      replacement_value_inr = ?,
+      calibration_valid_until = ?,
+      rent_only_high_capex = COALESCE(?, rent_only_high_capex),
       updated_at = ?
      WHERE id = ?`
   ).run(
@@ -536,6 +571,11 @@ app.put('/api/equipment/:id', requireAuth, (req: AuthedRequest, res) => {
       : null,
     b.conditionSummary !== undefined ? String(b.conditionSummary).trim() : null,
     b.imageUrl ? String(b.imageUrl).trim() : null,
+    b.replacementValueInr !== undefined && b.replacementValueInr !== '' && b.replacementValueInr !== null
+      ? Number(b.replacementValueInr)
+      : null,
+    b.calibrationValidUntil ? String(b.calibrationValidUntil).trim() : null,
+    b.rentOnlyHighCapex !== undefined ? (b.rentOnlyHighCapex ? 1 : 0) : null,
     now,
     id
   );
@@ -1158,7 +1198,7 @@ app.post('/api/rental-requests', requireAuth, (req: AuthedRequest, res) => {
       b.requiresOperator ? 1 : 0,
       b.requiresTransport ? 1 : 0,
       initialStatus,
-      'Unpaid (handled outside app during demo)',
+      'Awaiting Udaya Escrow Funding',
       baseRentalTotal,
       transportCharge,
       operatorCharge,
@@ -1195,15 +1235,22 @@ app.get('/api/rental-requests', requireAuth, (req: AuthedRequest, res) => {
     .prepare(
       `SELECT r.*,
               l.title as equipment_title, l.make_model, l.location_city, l.image_url, l.daily_rate as listing_daily_rate,
-              l.is_sample,
+              l.is_sample, l.is_verified_machinery,
               renter.name as renter_name, renter.phone as renter_phone,
               owner.name as owner_name, owner.phone as owner_phone,
-              COALESCE(op.business_name, owner.name) as business_name
+              COALESCE(op.business_name, owner.name) as business_name,
+              e.id as escrow_id, e.escrow_ref, e.status as escrow_status,
+              e.rental_amount as escrow_rental_amount, e.deposit_amount as escrow_deposit_amount,
+              e.platform_fee as escrow_platform_fee, e.total_funded as escrow_total_funded,
+              e.payment_method as escrow_payment_method, e.funded_at as escrow_funded_at,
+              e.handover_confirmed_at as escrow_handover_confirmed_at, e.released_at as escrow_released_at,
+              e.dispute_reason as escrow_dispute_reason
        FROM rental_requests r
        JOIN equipment_listings l ON l.id = r.equipment_id
        JOIN users renter ON renter.id = r.renter_id
        JOIN users owner ON owner.id = r.owner_id
        LEFT JOIN owner_profiles op ON op.user_id = r.owner_id
+       LEFT JOIN escrow_transactions e ON e.rental_request_id = r.id
        WHERE ${whereClause}
        ORDER BY r.id DESC`
     )
@@ -1550,7 +1597,8 @@ app.get('/api/admin/overview', requireRole('admin'), (_req, res) => {
   const listings = db
     .prepare(
       `SELECT l.id, l.title, l.location_city, l.daily_rate, l.availability_status, l.is_sample, l.is_removed,
-              c.name as category_name, u.name as owner_name, u.email as owner_email
+              l.is_verified_machinery, l.verification_badge_tier, l.verification_certificate_id, l.replacement_value_inr,
+              c.name as category_name, c.sector as category_sector, u.name as owner_name, u.email as owner_email
        FROM equipment_listings l
        JOIN equipment_categories c ON c.id = l.category_id
        JOIN users u ON u.id = l.owner_id
@@ -1579,7 +1627,20 @@ app.get('/api/admin/overview', requireRole('admin'), (_req, res) => {
     )
     .all();
 
-  res.json({ users, listings, reports, maintenanceSubmissions });
+  const escrowTransactions = db
+    .prepare(
+      `SELECT e.*, r.start_date, r.end_date, r.status as booking_status,
+              l.title as equipment_title, renter.name as renter_name, owner.name as owner_name
+       FROM escrow_transactions e
+       JOIN rental_requests r ON r.id = e.rental_request_id
+       JOIN equipment_listings l ON l.id = r.equipment_id
+       JOIN users renter ON renter.id = e.renter_id
+       JOIN users owner ON owner.id = e.owner_id
+       ORDER BY e.id DESC`
+    )
+    .all();
+
+  res.json({ users, listings, reports, maintenanceSubmissions, escrowTransactions });
 });
 
 app.patch('/api/admin/reports/:id', requireRole('admin'), (req: AuthedRequest, res) => {
@@ -1621,10 +1682,52 @@ app.patch('/api/admin/equipment/:id/moderate', requireRole('admin'), (req, res) 
   res.json({ ok: true });
 });
 
+app.patch('/api/admin/equipment/:id/verify', requireRole('admin'), (req: AuthedRequest, res) => {
+  const id = Number(req.params.id);
+  const { verified, tier } = req.body ?? {};
+  const listing = db
+    .prepare('SELECT id, owner_id, title, verification_certificate_id FROM equipment_listings WHERE id = ?')
+    .get(id) as { id: number; owner_id: number; title: string; verification_certificate_id: string } | undefined;
+
+  if (!listing) {
+    res.status(404).json({ error: 'Equipment listing not found.' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const isVerified = Boolean(verified);
+  const nextTier = isVerified
+    ? 'udaya_verified'
+    : tier === 'documents_reviewed'
+      ? 'documents_reviewed'
+      : 'unverified';
+  const certId = isVerified
+    ? listing.verification_certificate_id || `UDY-CERT-${crypto.randomInt(1000, 9999)}`
+    : '';
+
+  db.prepare(
+    `UPDATE equipment_listings
+     SET is_verified_machinery = ?, verification_badge_tier = ?, verification_certificate_id = ?, verified_at = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(isVerified ? 1 : 0, nextTier, certId, isVerified ? now : null, now, id);
+
+  createNotification(
+    listing.owner_id,
+    'verification_badge',
+    isVerified ? `Verified Machinery Badge granted: ${listing.title}` : `Verification status updated: ${listing.title}`,
+    isVerified
+      ? `Your listing passed administrator inspection and now displays the Udaya Verified Machinery Badge (${certId}).`
+      : `Verification badge status was set to ${nextTier}.`,
+    `/equipment/${listing.id}`
+  );
+
+  res.json({ ok: true, isVerified, verificationBadgeTier: nextTier, certificateId: certId });
+});
+
 app.patch('/api/admin/maintenance/:id/verify', requireRole('admin'), (req: AuthedRequest, res) => {
   const id = Number(req.params.id);
   const record = db.prepare('SELECT * FROM maintenance_records WHERE id = ?').get(id) as
-    | { id: number; document_name: string }
+    | { id: number; equipment_id: number; document_name: string }
     | undefined;
   if (!record) {
     res.status(404).json({ error: 'Maintenance record not found.' });
@@ -1636,12 +1739,747 @@ app.patch('/api/admin/maintenance/:id/verify', requireRole('admin'), (req: Authe
     });
     return;
   }
-  db.prepare("UPDATE maintenance_records SET verification_status = 'Independently verified', verified_by_admin_id = ? WHERE id = ?").run(
-    req.user!.id,
-    id
-  );
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE maintenance_records SET verification_status = 'Independently verified', verified_by_admin_id = ? WHERE id = ?"
+  ).run(req.user!.id, id);
+
+  const certId = `UDY-CERT-${crypto.randomInt(1000, 9999)}`;
+  db.prepare(
+    `UPDATE equipment_listings
+     SET is_verified_machinery = 1,
+         verification_badge_tier = 'udaya_verified',
+         verification_certificate_id = CASE WHEN verification_certificate_id = '' THEN ? ELSE verification_certificate_id END,
+         verified_at = COALESCE(verified_at, ?),
+         updated_at = ?
+     WHERE id = ?`
+  ).run(certId, now, now, record.equipment_id);
+
   res.json({ ok: true });
 });
+
+// =========================================================================
+// ESCROW PAYMENTS WORKFLOW (Protected, Server-Authoritative Ledger)
+// =========================================================================
+function recordEscrowEvent(
+  escrowId: number,
+  actorUserId: number,
+  actorRole: string,
+  eventType: string,
+  note: string
+): void {
+  db.prepare(
+    'INSERT INTO escrow_events (escrow_id, actor_user_id, actor_role, event_type, note, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(escrowId, actorUserId, actorRole, eventType, note, new Date().toISOString());
+}
+
+app.get('/api/escrow/booking/:bookingId', requireAuth, (req: AuthedRequest, res) => {
+  const bookingId = Number(req.params.bookingId);
+  const booking = db.prepare('SELECT * FROM rental_requests WHERE id = ?').get(bookingId) as
+    | Record<string, unknown>
+    | undefined;
+  if (!booking) {
+    res.status(404).json({ error: 'Booking not found.' });
+    return;
+  }
+  if (
+    Number(booking.renter_id) !== req.user!.id &&
+    Number(booking.owner_id) !== req.user!.id &&
+    req.user!.role !== 'admin'
+  ) {
+    res.status(403).json({ error: 'Unauthorized to view this escrow record.' });
+    return;
+  }
+
+  const escrow = db.prepare('SELECT * FROM escrow_transactions WHERE rental_request_id = ?').get(bookingId) as
+    | { id: number }
+    | undefined;
+  const events = escrow
+    ? db
+        .prepare(
+          `SELECT ev.*, u.name as actor_name
+           FROM escrow_events ev
+           LEFT JOIN users u ON u.id = ev.actor_user_id
+           WHERE ev.escrow_id = ?
+           ORDER BY ev.id ASC`
+        )
+        .all(escrow.id)
+    : [];
+
+  res.json({ escrow: escrow || null, events });
+});
+
+app.post('/api/escrow/:bookingId/fund', requireAuth, (req: AuthedRequest, res) => {
+  const bookingId = Number(req.params.bookingId);
+  const booking = db.prepare('SELECT * FROM rental_requests WHERE id = ?').get(bookingId) as
+    | Record<string, unknown>
+    | undefined;
+  if (!booking) {
+    res.status(404).json({ error: 'Booking not found.' });
+    return;
+  }
+  if (Number(booking.renter_id) !== req.user!.id) {
+    res.status(403).json({ error: 'Only the renter who submitted this request can fund escrow.' });
+    return;
+  }
+  if (!['Quotation received', 'Accepted', 'Request submitted', 'Owner reviewing'].includes(String(booking.status))) {
+    res.status(400).json({ error: `Cannot fund escrow when booking status is "${booking.status}".` });
+    return;
+  }
+
+  // Ensure calendar dates are still conflict-free before funding & locking booking
+  if (String(booking.status) !== 'Accepted') {
+    const conflict = hasEquipmentDateConflict(
+      Number(booking.equipment_id),
+      String(booking.start_date),
+      String(booking.end_date),
+      bookingId
+    );
+    if (conflict.conflict) {
+      res.status(409).json({ error: `Cannot fund escrow due to overlapping dates: ${conflict.reason}` });
+      return;
+    }
+  }
+
+  const existingEscrow = db
+    .prepare('SELECT * FROM escrow_transactions WHERE rental_request_id = ?')
+    .get(bookingId) as { id: number; status: string } | undefined;
+  if (existingEscrow && existingEscrow.status !== 'pending_funding') {
+    res.status(409).json({ error: 'Escrow is already funded for this booking.' });
+    return;
+  }
+
+  const allowedMethods = ['UPI Escrow', 'Bank Transfer (NEFT/RTGS)', 'Corporate Card'];
+  const rawMethod = String(req.body?.paymentMethod || 'UPI Escrow');
+  const paymentMethod = allowedMethods.includes(rawMethod) ? rawMethod : 'UPI Escrow';
+
+  const rentalAmount =
+    Number(booking.base_rental_total || 0) +
+    Number(booking.transport_charge || 0) +
+    Number(booking.operator_charge || 0) +
+    Number(booking.fuel_charge || 0) +
+    Number(booking.other_charge || 0);
+  const depositAmount = Number(booking.deposit_amount || 0);
+  const platformFee = Math.round(rentalAmount * 0.05);
+  const totalFunded = rentalAmount + depositAmount;
+  const now = new Date().toISOString();
+  const escrowRef = `ESC-UDY-${new Date().getFullYear()}-${crypto.randomInt(10000, 99999)}`;
+
+  let escrowId: number;
+  if (existingEscrow) {
+    db.prepare(
+      `UPDATE escrow_transactions
+       SET rental_amount = ?, deposit_amount = ?, platform_fee = ?, total_funded = ?,
+           payment_method = ?, status = 'funded_held', funded_at = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(rentalAmount, depositAmount, platformFee, totalFunded, paymentMethod, now, now, existingEscrow.id);
+    escrowId = existingEscrow.id;
+  } else {
+    const insertRes = db
+      .prepare(
+        `INSERT INTO escrow_transactions (
+          rental_request_id, renter_id, owner_id, escrow_ref, rental_amount, deposit_amount,
+          platform_fee, total_funded, payment_method, status, funded_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'funded_held', ?, ?, ?)`
+      )
+      .run(
+        bookingId,
+        Number(booking.renter_id),
+        Number(booking.owner_id),
+        escrowRef,
+        rentalAmount,
+        depositAmount,
+        platformFee,
+        totalFunded,
+        paymentMethod,
+        now,
+        now,
+        now
+      );
+    escrowId = Number(insertRes.lastInsertRowid);
+  }
+
+  recordEscrowEvent(
+    escrowId,
+    req.user!.id,
+    req.user!.role,
+    'FUNDED',
+    `Renter funded ₹${Math.round(totalFunded).toLocaleString('en-IN')} into Udaya Escrow via ${paymentMethod} (Rental ₹${Math.round(rentalAmount).toLocaleString('en-IN')} + Refundable Deposit ₹${Math.round(depositAmount).toLocaleString('en-IN')}).`
+  );
+
+  // Confirm booking and lock dates in availability_blocks
+  db.prepare(
+    `UPDATE rental_requests
+     SET status = 'Accepted', payment_status = 'Escrow Funded (Held Safely)', updated_at = ?
+     WHERE id = ?`
+  ).run(now, bookingId);
+
+  const existingBlock = db.prepare('SELECT id FROM availability_blocks WHERE booking_id = ?').get(bookingId);
+  if (!existingBlock) {
+    db.prepare(
+      'INSERT INTO availability_blocks (equipment_id, start_date, end_date, reason, booking_id) VALUES (?, ?, ?, ?, ?)'
+    ).run(
+      Number(booking.equipment_id),
+      String(booking.start_date),
+      String(booking.end_date),
+      `Escrow-confirmed booking #${bookingId}`,
+      bookingId
+    );
+  }
+
+  createNotification(
+    Number(booking.owner_id),
+    'escrow_funded',
+    `Escrow funded for Booking #${bookingId}`,
+    `${req.user!.name} placed ₹${Math.round(totalFunded).toLocaleString('en-IN')} into Udaya Escrow. Safe to dispatch equipment on ${booking.start_date}.`,
+    '/owner/bookings'
+  );
+
+  const escrow = db.prepare('SELECT * FROM escrow_transactions WHERE id = ?').get(escrowId);
+  res.status(201).json({ escrow });
+});
+
+app.post('/api/escrow/:bookingId/confirm-handover', requireAuth, (req: AuthedRequest, res) => {
+  const bookingId = Number(req.params.bookingId);
+  const escrow = db.prepare('SELECT * FROM escrow_transactions WHERE rental_request_id = ?').get(bookingId) as
+    | { id: number; renter_id: number; owner_id: number; status: string }
+    | undefined;
+  if (!escrow) {
+    res.status(404).json({ error: 'No escrow record found for this booking.' });
+    return;
+  }
+  if (escrow.renter_id !== req.user!.id && escrow.owner_id !== req.user!.id) {
+    res.status(403).json({ error: 'Unauthorized.' });
+    return;
+  }
+  if (escrow.status !== 'funded_held') {
+    res.status(400).json({ error: `Handover can only be confirmed when escrow is held (current: ${escrow.status}).` });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE escrow_transactions SET status = 'handover_confirmed', handover_confirmed_at = ?, updated_at = ? WHERE id = ?`
+  ).run(now, now, escrow.id);
+  db.prepare(
+    `UPDATE rental_requests SET payment_status = 'Escrow Held · Equipment Handover Confirmed', updated_at = ? WHERE id = ?`
+  ).run(now, bookingId);
+
+  recordEscrowEvent(
+    escrow.id,
+    req.user!.id,
+    req.user!.role,
+    'HANDOVER_CONFIRMED',
+    `${req.user!.name} (${req.user!.role}) confirmed safe equipment handover and site/lab inspection.`
+  );
+
+  const otherUser = req.user!.id === escrow.owner_id ? escrow.renter_id : escrow.owner_id;
+  createNotification(
+    otherUser,
+    'escrow_handover',
+    `Equipment handover confirmed on Booking #${bookingId}`,
+    `Escrow funds remain securely held until equipment return & release.`,
+    otherUser === escrow.owner_id ? '/owner/bookings' : '/renter/bookings'
+  );
+
+  res.json({ escrow: db.prepare('SELECT * FROM escrow_transactions WHERE id = ?').get(escrow.id) });
+});
+
+app.post('/api/escrow/:bookingId/release', requireAuth, (req: AuthedRequest, res) => {
+  const bookingId = Number(req.params.bookingId);
+  const escrow = db.prepare('SELECT * FROM escrow_transactions WHERE rental_request_id = ?').get(bookingId) as
+    | {
+        id: number;
+        renter_id: number;
+        owner_id: number;
+        rental_amount: number;
+        deposit_amount: number;
+        platform_fee: number;
+        status: string;
+      }
+    | undefined;
+  if (!escrow) {
+    res.status(404).json({ error: 'No escrow record found for this booking.' });
+    return;
+  }
+  if (escrow.renter_id !== req.user!.id && req.user!.role !== 'admin') {
+    res.status(403).json({ error: 'Only the renter (or an administrator) can release held escrow funds.' });
+    return;
+  }
+  if (!['funded_held', 'handover_confirmed'].includes(escrow.status)) {
+    res.status(400).json({ error: `Escrow cannot be released from status "${escrow.status}".` });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const ownerNet = Math.max(0, escrow.rental_amount - escrow.platform_fee);
+  db.prepare(
+    `UPDATE escrow_transactions SET status = 'released_to_owner', released_at = ?, updated_at = ? WHERE id = ?`
+  ).run(now, now, escrow.id);
+  db.prepare(
+    `UPDATE rental_requests SET status = 'Completed', payment_status = 'Escrow Released · Deposit Refunded', updated_at = ? WHERE id = ?`
+  ).run(now, bookingId);
+  db.prepare('DELETE FROM availability_blocks WHERE booking_id = ?').run(bookingId);
+
+  recordEscrowEvent(
+    escrow.id,
+    req.user!.id,
+    req.user!.role,
+    'RELEASED',
+    `Released ₹${Math.round(ownerNet).toLocaleString('en-IN')} net payout to owner (5% escrow fee: ₹${Math.round(escrow.platform_fee).toLocaleString('en-IN')}) and refunded ₹${Math.round(escrow.deposit_amount).toLocaleString('en-IN')} security deposit to renter.`
+  );
+
+  createNotification(
+    escrow.owner_id,
+    'escrow_released',
+    `Escrow payout released for Booking #${bookingId}`,
+    `₹${Math.round(ownerNet).toLocaleString('en-IN')} has been released to your account following return confirmation.`,
+    '/owner/bookings'
+  );
+
+  res.json({ escrow: db.prepare('SELECT * FROM escrow_transactions WHERE id = ?').get(escrow.id) });
+});
+
+app.post('/api/escrow/:bookingId/dispute', requireAuth, (req: AuthedRequest, res) => {
+  const bookingId = Number(req.params.bookingId);
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) {
+    res.status(400).json({ error: 'Please explain the issue to freeze escrow funds for dispute review.' });
+    return;
+  }
+  const escrow = db.prepare('SELECT * FROM escrow_transactions WHERE rental_request_id = ?').get(bookingId) as
+    | { id: number; renter_id: number; owner_id: number; status: string }
+    | undefined;
+  if (!escrow) {
+    res.status(404).json({ error: 'No escrow record found for this booking.' });
+    return;
+  }
+  if (escrow.renter_id !== req.user!.id && escrow.owner_id !== req.user!.id) {
+    res.status(403).json({ error: 'Unauthorized.' });
+    return;
+  }
+  if (!['funded_held', 'handover_confirmed'].includes(escrow.status)) {
+    res.status(400).json({ error: 'Disputes can only be opened while escrow funds are held.' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE escrow_transactions SET status = 'disputed', dispute_reason = ?, updated_at = ? WHERE id = ?`
+  ).run(reason, now, escrow.id);
+  db.prepare(
+    `UPDATE rental_requests SET payment_status = 'Escrow Frozen (Dispute Under Admin Review)', updated_at = ? WHERE id = ?`
+  ).run(now, bookingId);
+
+  recordEscrowEvent(escrow.id, req.user!.id, req.user!.role, 'DISPUTED', `Dispute opened: ${reason}`);
+
+  const booking = db.prepare('SELECT equipment_id FROM rental_requests WHERE id = ?').get(bookingId) as
+    | { equipment_id: number }
+    | undefined;
+  db.prepare(
+    'INSERT INTO reports (reporter_id, equipment_id, rental_request_id, reason, details, status, admin_notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(req.user!.id, booking?.equipment_id ?? null, bookingId, 'Escrow payment dispute', reason, 'Open', '', now);
+
+  res.json({ escrow: db.prepare('SELECT * FROM escrow_transactions WHERE id = ?').get(escrow.id) });
+});
+
+app.post('/api/admin/escrow/:bookingId/resolve', requireRole('admin'), (req: AuthedRequest, res) => {
+  const bookingId = Number(req.params.bookingId);
+  const resolution = req.body?.resolution === 'refunded_to_renter' ? 'refunded_to_renter' : 'released_to_owner';
+  const note = String(req.body?.note || '').trim() || `Administrator resolved escrow as ${resolution}.`;
+
+  const escrow = db.prepare('SELECT * FROM escrow_transactions WHERE rental_request_id = ?').get(bookingId) as
+    | { id: number; renter_id: number; owner_id: number; status: string }
+    | undefined;
+  if (!escrow) {
+    res.status(404).json({ error: 'Escrow record not found.' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE escrow_transactions SET status = ?, released_at = ?, updated_at = ? WHERE id = ?`
+  ).run(resolution, now, now, escrow.id);
+
+  const nextPaymentStatus =
+    resolution === 'refunded_to_renter'
+      ? 'Escrow Refunded to Renter (Admin Resolved)'
+      : 'Escrow Released to Owner (Admin Resolved)';
+  const nextBookingStatus = resolution === 'refunded_to_renter' ? 'Cancelled' : 'Completed';
+
+  db.prepare('UPDATE rental_requests SET status = ?, payment_status = ?, updated_at = ? WHERE id = ?').run(
+    nextBookingStatus,
+    nextPaymentStatus,
+    now,
+    bookingId
+  );
+  db.prepare('DELETE FROM availability_blocks WHERE booking_id = ?').run(bookingId);
+
+  recordEscrowEvent(escrow.id, req.user!.id, 'admin', 'ADMIN_RESOLVED', note);
+
+  createNotification(escrow.renter_id, 'escrow_resolved', `Escrow resolved for Booking #${bookingId}`, note, '/renter/bookings');
+  createNotification(escrow.owner_id, 'escrow_resolved', `Escrow resolved for Booking #${bookingId}`, note, '/owner/bookings');
+
+  res.json({ ok: true, resolution });
+});
+
+// =========================================================================
+// MULTILINGUAL VOICE ASSISTANT ROUTES (Server-Side @google/genai)
+// =========================================================================
+app.post('/api/voice/transcribe', async (req, res) => {
+  try {
+    const { audioBase64, mimeType, languageName } = req.body ?? {};
+    if (!audioBase64 || typeof audioBase64 !== 'string') {
+      res.status(400).json({ error: 'Audio payload is required for transcription.' });
+      return;
+    }
+    const transcript = await transcribeAudioWithGemini(
+      audioBase64,
+      String(mimeType || 'audio/webm'),
+      String(languageName || 'English')
+    );
+    res.json({ transcript });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unable to transcribe audio.';
+    res.status(502).json({ error: msg });
+  }
+});
+
+app.post('/api/voice/assist', async (req, res) => {
+  try {
+    const { query, languageCode, languageName, currentPath } = req.body ?? {};
+    if (!query || !String(query).trim()) {
+      res.status(400).json({ error: 'Voice or text query is required.' });
+      return;
+    }
+
+    const categories = db
+      .prepare('SELECT slug, name, sector FROM equipment_categories WHERE is_active = 1 ORDER BY sort_order ASC')
+      .all() as Array<{ slug: string; name: string; sector: string }>;
+
+    const listings = db
+      .prepare(
+        `SELECT l.id, l.title, c.name as category_name, c.slug as category_slug, c.sector,
+                l.location_city, l.daily_rate, l.replacement_value_inr, l.is_verified_machinery, l.availability_status,
+                l.image_url
+         FROM equipment_listings l
+         JOIN equipment_categories c ON c.id = l.category_id
+         WHERE l.is_removed = 0 AND l.availability_status != 'paused'
+         ORDER BY l.is_verified_machinery DESC, l.id DESC
+         LIMIT 30`
+      )
+      .all() as Array<{
+      id: number;
+      title: string;
+      category_name: string;
+      category_slug: string;
+      sector: string;
+      location_city: string;
+      daily_rate: number;
+      replacement_value_inr: number | null;
+      is_verified_machinery: number;
+      availability_status: string;
+      image_url: string;
+    }>;
+
+    const result = await runVoiceAssistantWithGemini({
+      query: String(query).trim(),
+      languageCode: String(languageCode || 'en'),
+      languageName: String(languageName || 'English'),
+      currentPath: String(currentPath || '/'),
+      categories,
+      catalog: listings.map((l) => ({
+        id: l.id,
+        title: l.title,
+        category_name: l.category_name,
+        category_slug: l.category_slug,
+        sector: l.sector,
+        location_city: l.location_city,
+        daily_rate: l.daily_rate,
+        replacement_value_inr: l.replacement_value_inr,
+        is_verified_machinery: Boolean(l.is_verified_machinery),
+        availability_status: l.availability_status,
+      })),
+    });
+
+    const recommendedItems = listings
+      .filter((l) => result.recommendedIds.includes(l.id))
+      .map((l) => ({
+        id: l.id,
+        title: l.title,
+        category_name: l.category_name,
+        location_city: l.location_city,
+        daily_rate: l.daily_rate,
+        is_verified_machinery: Boolean(l.is_verified_machinery),
+        image_url: l.image_url,
+      }));
+
+    res.json({
+      replyText: result.replyText,
+      action: result.action,
+      recommendedItems,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Voice assistant request failed.';
+    res.status(502).json({ error: msg });
+  }
+});
+
+app.post('/api/voice/speak', async (req, res) => {
+  try {
+    const { text, languageName } = req.body ?? {};
+    if (!text || !String(text).trim()) {
+      res.status(400).json({ error: 'Text is required for speech output.' });
+      return;
+    }
+    const audioBase64 = await synthesizeSpeechWithGemini(
+      String(text).trim(),
+      String(languageName || 'English')
+    );
+    res.json({ audioBase64, mimeType: 'audio/wav' });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Text-to-speech failed.';
+    res.status(502).json({ error: msg });
+  }
+});
+
+// =========================================================================
+// MULTI-TURN GROUNDED CHATBOT (General, Fast Flash Lite, Google Search, Google Maps)
+// =========================================================================
+function buildLiveCatalogSummary(): string {
+  const listings = db
+    .prepare(
+      `SELECT l.id, l.title, c.name as category_name, c.sector, l.location_city, l.location_area,
+              l.daily_rate, l.is_verified_machinery, l.rent_only_high_capex, l.availability_status
+       FROM equipment_listings l
+       JOIN equipment_categories c ON c.id = l.category_id
+       WHERE l.is_removed = 0 AND l.availability_status != 'paused'
+       ORDER BY l.is_verified_machinery DESC, l.id DESC
+       LIMIT 24`
+    )
+    .all() as Array<{
+    id: number;
+    title: string;
+    category_name: string;
+    sector: string;
+    location_city: string;
+    location_area: string;
+    daily_rate: number;
+    is_verified_machinery: number;
+    rent_only_high_capex: number;
+    availability_status: string;
+  }>;
+
+  return listings
+    .map(
+      (l) =>
+        `[#${l.id}] ${l.title} (${l.category_name}, ${l.sector}) — ${l.location_area ? `${l.location_area}, ` : ''}${l.location_city} — INR ${l.daily_rate}/day${l.is_verified_machinery ? ' [Udaya Verified]' : ''}${l.rent_only_high_capex ? ' [High-Capex Rent-Only]' : ''} — ${l.availability_status}`
+    )
+    .join('\n');
+}
+
+app.post('/api/chat/message', async (req, res) => {
+  try {
+    const { message, history, mode, languageName, latLng } = req.body ?? {};
+    if (!message || !String(message).trim()) {
+      res.status(400).json({ error: 'Message text is required.' });
+      return;
+    }
+
+    const cleanHistory: GroundedChatTurn[] = Array.isArray(history)
+      ? history
+          .filter(
+            (h): h is GroundedChatTurn =>
+              Boolean(h) && (h.role === 'user' || h.role === 'assistant') && typeof h.text === 'string'
+          )
+          .slice(-14)
+      : [];
+
+    const safeMode: GroundedChatMode = ['general', 'fast', 'search', 'maps'].includes(mode)
+      ? mode
+      : 'general';
+
+    const parsedLatLng =
+      latLng &&
+      typeof latLng.latitude === 'number' &&
+      typeof latLng.longitude === 'number' &&
+      Number.isFinite(latLng.latitude) &&
+      Number.isFinite(latLng.longitude)
+        ? { latitude: latLng.latitude, longitude: latLng.longitude }
+        : null;
+
+    const result = await runGroundedChatWithGemini({
+      history: cleanHistory,
+      message: String(message).trim(),
+      mode: safeMode,
+      languageName: String(languageName || 'English'),
+      latLng: parsedLatLng,
+      catalogSummary: buildLiveCatalogSummary(),
+    });
+
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unable to process AI chat request.';
+    res.status(502).json({ error: msg });
+  }
+});
+
+// =========================================================================
+// REAL-TIME GEMINI LIVE API VOICE BRIDGE (ws -> gemini-3.8-live)
+// =========================================================================
+function attachLiveVoiceBridge(httpServer: http.Server) {
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on('upgrade', (request, socket, head) => {
+    try {
+      const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+      if (url.pathname === '/api/live-voice') {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit('connection', ws, request, url);
+        });
+      }
+    } catch {
+      socket.destroy();
+    }
+  });
+
+  wss.on('connection', async (clientWs: WebSocket, _req: http.IncomingMessage, url: URL) => {
+    const languageName = (url.searchParams.get('lang') || 'English').slice(0, 40);
+    const voiceName = (url.searchParams.get('voice') || 'Zephyr').slice(0, 24);
+    const allowedVoices = new Set(['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr']);
+    const selectedVoice = allowedVoices.has(voiceName) ? voiceName : 'Zephyr';
+
+    let liveSession: Awaited<ReturnType<ReturnType<typeof getGeminiClient>['live']['connect']>> | null = null;
+    let isClosed = false;
+
+    const safeSend = (payload: Record<string, unknown>) => {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(payload));
+      }
+    };
+
+    try {
+      const ai = getGeminiClient();
+      const catalogSummary = buildLiveCatalogSummary();
+
+      liveSession = await ai.live.connect({
+        model: 'gemini-3.8-live',
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: selectedVoice },
+            },
+          },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          systemInstruction: `You are Udaya Live Voice Advisor for the Udaya Zero-Idle Equipment & High-Capex Lab Marketplace.
+Speak naturally, concisely, and warmly in ${languageName}. Keep spoken answers brief (1-3 sentences per turn) like a real phone conversation.
+Help users compare construction machinery (excavators, JCBs, concrete mixers, generators) and high-capex rent-only lab/industrial equipment (HPLC spectrometers, confocal microscopes, 5-axis CNC, LiDAR scanners), explain Udaya Verified Machinery certificates, and walk through Escrow Protection and Zero-Idle matching.
+Ground your recommendations strictly in this live catalog:
+${catalogSummary}`,
+        },
+        callbacks: {
+          onopen: () => {
+            safeSend({ type: 'ready', voice: selectedVoice, language: languageName });
+          },
+          onmessage: (message: {
+            serverContent?: {
+              interrupted?: boolean;
+              turnComplete?: boolean;
+              inputTranscription?: { text?: string };
+              outputTranscription?: { text?: string };
+              modelTurn?: {
+                parts?: Array<{
+                  inlineData?: { data?: string; mimeType?: string };
+                  text?: string;
+                }>;
+              };
+            };
+          }) => {
+            const sc = message.serverContent;
+
+            if (!sc) return;
+
+            if (sc.interrupted) {
+              safeSend({ type: 'interrupted' });
+            }
+            if (sc.inputTranscription?.text) {
+              safeSend({ type: 'input_transcript', text: sc.inputTranscription.text });
+            }
+            if (sc.outputTranscription?.text) {
+              safeSend({ type: 'output_transcript', text: sc.outputTranscription.text });
+            }
+            if (sc.modelTurn?.parts) {
+              for (const part of sc.modelTurn.parts) {
+                if (part.inlineData?.data) {
+                  safeSend({
+                    type: 'audio',
+                    data: part.inlineData.data,
+                    mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000',
+                  });
+                }
+              }
+            }
+            if (sc.turnComplete) {
+              safeSend({ type: 'turn_complete' });
+            }
+          },
+          onerror: (err: unknown) => {
+            const errMsg = err instanceof Error ? err.message : 'Live voice stream encountered an error.';
+            safeSend({ type: 'error', error: errMsg });
+          },
+          onclose: () => {
+            if (!isClosed) {
+              safeSend({ type: 'closed' });
+            }
+          },
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to start Gemini Live session.';
+      safeSend({ type: 'error', error: msg });
+      clientWs.close();
+      return;
+    }
+
+    clientWs.on('message', (rawData) => {
+      if (!liveSession || isClosed) return;
+      try {
+        const parsed = JSON.parse(String(rawData)) as {
+          type?: string;
+          data?: string;
+          text?: string;
+        };
+        if (parsed.type === 'audio' && typeof parsed.data === 'string' && parsed.data.length > 0) {
+          liveSession.sendRealtimeInput({
+            audio: {
+              data: parsed.data,
+              mimeType: 'audio/pcm;rate=16000',
+            },
+          });
+        } else if (parsed.type === 'text' && typeof parsed.text === 'string' && parsed.text.trim()) {
+          liveSession.sendClientContent({
+            turns: parsed.text.trim().slice(0, 1000),
+            turnComplete: true,
+          });
+        }
+      } catch {
+        // Ignore malformed client frames
+      }
+    });
+
+    clientWs.on('close', () => {
+      isClosed = true;
+      try {
+        liveSession?.close();
+      } catch {
+        // Ignore close error
+      }
+      liveSession = null;
+    });
+  });
+}
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
@@ -1660,7 +2498,10 @@ async function startServer() {
     }
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = http.createServer(app);
+  attachLiveVoiceBridge(httpServer);
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Udaya server running on http://localhost:${PORT}`);
   });
 }

@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { apiFetch, formatINR } from '../lib/api';
 import type { RentalRequest } from '../types';
-import { BookingStatusLabel } from '../components/StatusLabel';
+import { BookingStatusLabel, VerifiedMachineryBadge } from '../components/StatusLabel';
+import { EscrowWorkflowPanel } from '../components/EscrowPanel';
 
 export function OwnerBookingsPage() {
   const [bookings, setBookings] = useState<RentalRequest[]>([]);
@@ -89,9 +90,9 @@ export function OwnerBookingsPage() {
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-bold text-[#0F172A]">Booking Management</h1>
+        <h1 className="font-display text-2xl font-bold text-[#0F172A]">Bookings &amp; Escrow Payouts</h1>
         <p className="text-sm text-slate-600 mt-1">
-          Review incoming rental requests, confirm itemized charges, accept non-overlapping dates, or mark completed.
+          Review incoming requests, confirm itemized quotes, track Udaya Escrow holds, and confirm equipment handover.
         </p>
       </div>
 
@@ -117,7 +118,10 @@ export function OwnerBookingsPage() {
                   <div className="text-xs text-slate-500">
                     <span className="font-mono">Request #{b.id}</span> · Renter: {b.renter_name} ({b.renter_phone || 'No phone'})
                   </div>
-                  <h2 className="font-display text-lg font-bold text-[#0F172A] mt-1">{b.equipment_title}</h2>
+                  <div className="flex flex-wrap items-center gap-2 mt-1">
+                    <h2 className="font-display text-lg font-bold text-[#0F172A]">{b.equipment_title}</h2>
+                    {b.is_verified_machinery && <VerifiedMachineryBadge isVerified compact />}
+                  </div>
                   <div className="text-sm font-mono tabular-nums text-slate-700 mt-1">
                     {b.start_date} to {b.end_date} ({b.duration_days}d) · {b.job_location}
                   </div>
@@ -179,6 +183,10 @@ export function OwnerBookingsPage() {
                   </button>
                 )}
               </div>
+
+              {(!['Cancelled', 'Rejected'].includes(b.status) || Boolean(b.escrow_status)) && (
+                <EscrowWorkflowPanel booking={b} role="owner" onUpdated={load} />
+              )}
             </div>
           ))}
         </div>

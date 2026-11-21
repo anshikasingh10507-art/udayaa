@@ -109,8 +109,28 @@ export interface EquipmentListing {
   owner_bio?: string;
   latest_maintenance?: MaintenanceRecord | null;
   availability_blocks?: AvailabilityBlock[];
+  review_count?: number;
+  average_rating?: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface EquipmentReview {
+  id: number;
+  equipment_id: number;
+  reviewer_name: string;
+  reviewer_role_label: string;
+  reviewer_city: string;
+  rating: number;
+  title: string;
+  comment: string;
+  rental_duration_days: number;
+  verified_rental: boolean;
+  is_sample: boolean;
+  created_at: string;
+  equipment_title?: string;
+  equipment_city?: string;
+  category_name?: string;
 }
 
 export interface JobRequest {

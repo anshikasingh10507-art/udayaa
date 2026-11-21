@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, Lock, Bookmark, BookmarkCheck } from 'lucide-react';
+import { Wrench, Lock, Bookmark, BookmarkCheck, Star } from 'lucide-react';
 import type { EquipmentListing } from '../types';
 import { formatINR } from '../lib/api';
 import { useLanguage } from '../context/LanguageContext';
@@ -154,6 +154,16 @@ export function EquipmentCard({ item }: { item: EquipmentListing }) {
           <span>{item.operator_available ? t('card.operatorOption') : t('card.dryHire')}</span>
           <span aria-hidden="true">·</span>
           <span>{item.transport_available ? t('card.deliveryAvailable') : t('card.pickupTransport')}</span>
+          {item.review_count != null && item.review_count > 0 && item.average_rating != null && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="inline-flex items-center gap-0.5 font-mono tabular-nums font-medium text-[#0F172A]">
+                <Star className="w-3 h-3 text-amber-500 fill-amber-500" aria-hidden="true" />
+                <span>{item.average_rating.toFixed(1)}</span>
+                <span className="text-slate-400">({item.review_count})</span>
+              </span>
+            </>
+          )}
         </div>
 
         <div className="pt-3 mt-1 border-t border-slate-100 flex items-baseline justify-between gap-3">

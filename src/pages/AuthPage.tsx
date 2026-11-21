@@ -301,13 +301,30 @@ export function AuthPage() {
             <div className="p-4 bg-[#F8FAFC] border border-slate-200 rounded-md">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <div className="text-sm font-semibold text-[#0F172A]">Rajesh Sharma · Owner</div>
+                  <div className="text-sm font-semibold text-[#0F172A]">Rajesh Sharma · Fleet Owner</div>
                   <div className="text-xs font-mono text-slate-500">owner@udaya.demo / demo1234</div>
                 </div>
                 <button
                   type="button"
                   disabled={submitting}
                   onClick={() => handleDemoLogin('owner@udaya.demo', 'demo1234')}
+                  className="px-3 py-1.5 text-xs font-medium text-white bg-[#0F172A] hover:bg-slate-800 rounded whitespace-nowrap"
+                >
+                  Sign In
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 bg-[#F8FAFC] border border-slate-200 rounded-md">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-[#0F172A]">Dr. Ananya Deshmukh · Lab &amp; CNC Owner</div>
+                  <div className="text-xs font-mono text-slate-500">lab.partner@udaya.demo / demo1234</div>
+                </div>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => handleDemoLogin('lab.partner@udaya.demo', 'demo1234')}
                   className="px-3 py-1.5 text-xs font-medium text-white bg-[#0F172A] hover:bg-slate-800 rounded whitespace-nowrap"
                 >
                   Sign In

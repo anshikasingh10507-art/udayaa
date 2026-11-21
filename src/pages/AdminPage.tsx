@@ -198,6 +198,157 @@ export function AdminPage() {
         <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-md text-xs text-emerald-800">{msg}</div>
       )}
 
+      {/* Live Marketplace & Escrow Metrics Strip (computed from database records) */}
+      {data && (() => {
+        const activeListings = data.listings.filter((l) => !l.is_removed);
+        const verifiedCount = activeListings.filter((l) => Boolean(l.is_verified_machinery)).length;
+        const totalEscrowVolume = (data.escrowTransactions || []).reduce((sum, e) => sum + Number(e.total_funded || 0), 0);
+        const disputedEscrows = (data.escrowTransactions || []).filter((e) => e.status === 'disputed').length;
+        const openReports = data.reports.filter((r) => r.status === 'Open' || r.status === 'Under Review').length;
+
+        const sectorCounts = [
+          {
+            label: 'Construction & Power',
+            count: activeListings.filter((l) => !l.category_sector || l.category_sector === 'construction').length,
+          },
+          {
+            label: 'Lab & Biotech',
+            count: activeListings.filter((l) => l.category_sector === 'laboratory').length,
+          },
+          {
+            label: 'Precision CNC',
+            count: activeListings.filter((l) => l.category_sector === 'precision_industrial').length,
+          },
+          {
+            label: '3D Survey & LiDAR',
+            count: activeListings.filter((l) => l.category_sector === 'surveying_geotech').length,
+          },
+        ];
+        const totalSectorCount = Math.max(1, activeListings.length);
+
+        const escrowCounts = [
+          {
+            label: 'Released to Owner',
+            count: (data.escrowTransactions || []).filter((e) => e.status === 'released_to_owner').length,
+            barClass: 'bg-emerald-600',
+          },
+          {
+            label: 'Held / Active Handover',
+            count: (data.escrowTransactions || []).filter((e) =>
+              ['funded_held', 'handover_confirmed'].includes(e.status)
+            ).length,
+            barClass: 'bg-[#0D9488]',
+          },
+          {
+            label: 'Disputed / Frozen',
+            count: disputedEscrows,
+            barClass: 'bg-rose-600',
+          },
+          {
+            label: 'Refunded to Renter',
+            count: (data.escrowTransactions || []).filter((e) => e.status === 'refunded_to_renter').length,
+            barClass: 'bg-slate-500',
+          },
+        ];
+        const totalEscrowTx = Math.max(1, (data.escrowTransactions || []).length);
+
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200 rounded-lg p-5">
+                <div className="text-xs font-medium text-slate-500">Active Fleet Listings</div>
+                <div className="font-mono tabular-nums text-2xl font-bold text-[#0F172A] mt-1">
+                  {activeListings.length}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {data.users.filter((u) => u.role === 'owner').length} owners ·{' '}
+                  {data.users.filter((u) => u.role === 'renter').length} renters (Sample)
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg p-5">
+                <div className="text-xs font-medium text-slate-500">Udaya Verified Machinery</div>
+                <div className="font-mono tabular-nums text-2xl font-bold text-[#0F766E] mt-1">
+                  {verifiedCount}{' '}
+                  <span className="text-xs font-sans font-normal text-slate-500">
+                    / {activeListings.length} ({Math.round((verifiedCount / totalSectorCount) * 100)}%)
+                  </span>
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {data.maintenanceSubmissions.filter((m) => m.verification_status === 'Documents submitted').length}{' '}
+                  docs pending review
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg p-5">
+                <div className="text-xs font-medium text-slate-500">Sample Escrow Volume</div>
+                <div className="font-mono tabular-nums text-2xl font-bold text-[#0F172A] mt-1">
+                  {formatINR(totalEscrowVolume)}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {(data.escrowTransactions || []).length} ledger records · {disputedEscrows} disputed
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg p-5">
+                <div className="text-xs font-medium text-slate-500">Open Moderation Queue</div>
+                <div className="font-mono tabular-nums text-2xl font-bold text-[#C2410C] mt-1">{openReports}</div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {data.reports.length} total reports logged
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-display text-sm font-semibold text-[#0F172A]">Active Inventory by Sector</h2>
+                  <span className="text-[11px] text-slate-500">Sample demonstration catalog</span>
+                </div>
+                <div className="space-y-2.5">
+                  {sectorCounts.map((s) => (
+                    <div key={s.label} className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-700">{s.label}</span>
+                        <span className="font-mono tabular-nums font-medium text-[#0F172A]">
+                          {s.count} ({Math.round((s.count / totalSectorCount) * 100)}%)
+                        </span>
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#0D9488] rounded-full"
+                          style={{ width: `${Math.round((s.count / totalSectorCount) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-display text-sm font-semibold text-[#0F172A]">Escrow Settlement Status</h2>
+                  <span className="text-[11px] text-slate-500">Sample demonstration ledger</span>
+                </div>
+                <div className="space-y-2.5">
+                  {escrowCounts.map((es) => (
+                    <div key={es.label} className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-700">{es.label}</span>
+                        <span className="font-mono tabular-nums font-medium text-[#0F172A]">{es.count}</span>
+                      </div>
+                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${es.barClass}`}
+                          style={{ width: `${Math.round((es.count / totalEscrowTx) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg w-fit">
         {[
           ['listings', `Listings & Badges (${data?.listings.length ?? 0})`],

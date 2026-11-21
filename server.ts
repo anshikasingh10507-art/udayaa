@@ -68,6 +68,12 @@ function enrichEquipmentRow(row: Record<string, unknown>) {
     )
     .all(row.id as number);
 
+  const reviewAgg = db
+    .prepare(
+      'SELECT COUNT(*) as review_count, ROUND(AVG(rating), 1) as average_rating FROM equipment_reviews WHERE equipment_id = ?'
+    )
+    .get(row.id as number) as { review_count: number; average_rating: number | null } | undefined;
+
   return {
     ...row,
     operator_available: Boolean(row.operator_available),
@@ -76,6 +82,8 @@ function enrichEquipmentRow(row: Record<string, unknown>) {
     is_removed: Boolean(row.is_removed),
     is_verified_machinery: Boolean(row.is_verified_machinery),
     rent_only_high_capex: Boolean(row.rent_only_high_capex),
+    review_count: Number(reviewAgg?.review_count ?? 0),
+    average_rating: reviewAgg?.average_rating != null ? Number(reviewAgg.average_rating) : null,
     latest_maintenance: maint
       ? {
           ...maint,
@@ -103,6 +111,30 @@ app.get('/api/categories', (req, res) => {
     ? db.prepare('SELECT * FROM equipment_categories ORDER BY sort_order ASC').all()
     : db.prepare('SELECT * FROM equipment_categories WHERE is_active = 1 ORDER BY sort_order ASC').all();
   res.json({ categories: rows });
+});
+
+app.get('/api/reviews/featured', (_req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT r.id, r.equipment_id, r.reviewer_name, r.reviewer_role_label, r.reviewer_city,
+              r.rating, r.title, r.comment, r.rental_duration_days, r.verified_rental, r.is_sample, r.created_at,
+              l.title as equipment_title, l.location_city as equipment_city, c.name as category_name
+       FROM equipment_reviews r
+       JOIN equipment_listings l ON l.id = r.equipment_id
+       JOIN equipment_categories c ON c.id = l.category_id
+       WHERE l.is_removed = 0
+       ORDER BY r.rating DESC, r.id ASC
+       LIMIT 3`
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  res.json({
+    reviews: rows.map((r) => ({
+      ...r,
+      verified_rental: Boolean(r.verified_rental),
+      is_sample: Boolean(r.is_sample),
+    })),
+  });
 });
 
 // Authentication & Profiles
@@ -365,6 +397,16 @@ app.get('/api/equipment/:id', (req: AuthedRequest, res) => {
     )
     .all(id);
 
+  const reviews = db
+    .prepare(
+      `SELECT id, equipment_id, reviewer_name, reviewer_role_label, reviewer_city,
+              rating, title, comment, rental_duration_days, verified_rental, is_sample, created_at
+       FROM equipment_reviews
+       WHERE equipment_id = ?
+       ORDER BY id DESC`
+    )
+    .all(id) as Array<Record<string, unknown>>;
+
   res.json({
     equipment: enrichEquipmentRow(row),
     maintenanceHistory: maintHistory.map((m: Record<string, unknown>) => ({
@@ -376,6 +418,11 @@ app.get('/api/equipment/:id', (req: AuthedRequest, res) => {
           return [];
         }
       })(),
+    })),
+    reviews: reviews.map((r) => ({
+      ...r,
+      verified_rental: Boolean(r.verified_rental),
+      is_sample: Boolean(r.is_sample),
     })),
   });
 });
@@ -416,6 +463,8 @@ app.post('/api/equipment', requireRole('owner'), (req: AuthedRequest, res) => {
     'loaders-earthmoving': '/src/assets/images/eq_skid_loader_1794920313017.jpg',
     'concrete-mixers': '/src/assets/images/eq_concrete_mixer_1794920312061.jpg',
     generators: '/src/assets/images/eq_diesel_generator_1794920312999.jpg',
+    compressors: '/src/assets/images/eq_diesel_generator_1794920312999.jpg',
+    'other-construction': '/src/assets/images/eq_concrete_mixer_1794920312061.jpg',
     'lab-analytical': '/src/assets/images/eq_lab_hplc_spectrometer_1795217352610.jpg',
     'lab-biotech-microscopy': '/src/assets/images/eq_lab_confocal_microscope_1795217353612.jpg',
     'industrial-cnc': '/src/assets/images/eq_industrial_cnc_machine_1795217351702.jpg',

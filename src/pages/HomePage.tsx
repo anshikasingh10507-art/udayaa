@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, ArrowRight, CheckCircle2, FileText, ShieldCheck, Calendar, FlaskConical, Lock } from 'lucide-react';
+import { Search, ArrowRight, CheckCircle2, FileText, ShieldCheck, Calendar, FlaskConical, Star } from 'lucide-react';
 import { apiFetch, CITIES_LIST } from '../lib/api';
-import type { EquipmentCategory, EquipmentListing } from '../types';
+import type { EquipmentCategory, EquipmentListing, EquipmentReview } from '../types';
 import { EquipmentCard, EquipmentImage } from '../components/EquipmentCard';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -14,6 +14,7 @@ export function HomePage() {
   const [categories, setCategories] = useState<EquipmentCategory[]>([]);
   const [listings, setListings] = useState<EquipmentListing[]>([]);
   const [highCapexListings, setHighCapexListings] = useState<EquipmentListing[]>([]);
+  const [featuredReviews, setFeaturedReviews] = useState<EquipmentReview[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchCity, setSearchCity] = useState('');
@@ -22,8 +23,9 @@ export function HomePage() {
     Promise.all([
       apiFetch<{ categories: EquipmentCategory[] }>('/api/categories'),
       apiFetch<{ equipment: EquipmentListing[] }>('/api/equipment'),
+      apiFetch<{ reviews: EquipmentReview[] }>('/api/reviews/featured').catch(() => ({ reviews: [] })),
     ])
-      .then(([catRes, eqRes]) => {
+      .then(([catRes, eqRes, revRes]) => {
         setCategories(catRes.categories);
         const all = eqRes.equipment || [];
         const specialized = all.filter((item) => item.rent_only_high_capex);
@@ -32,6 +34,7 @@ export function HomePage() {
         // Show a balanced showcase: 3 verified/specialized + 3 construction listings
         const featured = [...construction.slice(0, 3), ...specialized.slice(0, 3)];
         setListings(featured.length > 0 ? featured : all.slice(0, 6));
+        setFeaturedReviews(revRes.reviews || []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -377,6 +380,50 @@ export function HomePage() {
             </p>
           </div>
         </div>
+
+        {/* Sample Renter & Lab Partner Feedback */}
+        {featuredReviews.length > 0 && (
+          <div className="mt-8">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2 mb-5">
+              <div>
+                <h2 className="font-display text-xl font-bold text-[#0F172A]">
+                  Recent Renter &amp; Lab Partner Feedback
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Sample demonstration feedback illustrating contractor, biotech lab, and precision CNC rental workflows.
+                </p>
+              </div>
+              <span className="text-xs font-medium text-amber-700 whitespace-nowrap">Sample demonstration data</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              {featuredReviews.map((rev) => (
+                <div
+                  key={rev.id}
+                  className="bg-white border border-slate-200 rounded-lg p-5 flex flex-col justify-between gap-3"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="inline-flex items-center gap-1 font-mono font-semibold text-[#0F172A]">
+                        <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" aria-hidden="true" />
+                        <span>{rev.rating}.0</span>
+                      </span>
+                      <span className="text-slate-500 truncate">{rev.equipment_city || rev.reviewer_city}</span>
+                    </div>
+                    <h3 className="font-display text-sm font-semibold text-[#0F172A] leading-snug">{rev.title}</h3>
+                    <p className="text-xs text-slate-600 leading-relaxed">{rev.comment}</p>
+                  </div>
+                  <div className="pt-3 border-t border-slate-100 text-xs">
+                    <div className="font-semibold text-[#0F172A]">{rev.reviewer_name}</div>
+                    <div className="text-slate-500 truncate">
+                      {rev.reviewer_role_label}
+                      {rev.equipment_title ? ` · ${rev.equipment_title}` : ''}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );

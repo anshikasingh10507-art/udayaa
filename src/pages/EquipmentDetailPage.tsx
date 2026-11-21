@@ -15,9 +15,10 @@ import {
   MapPin,
   Bookmark,
   BookmarkCheck,
+  Star,
 } from 'lucide-react';
 import { apiFetch, formatINR } from '../lib/api';
-import type { EquipmentListing, MaintenanceRecord } from '../types';
+import type { EquipmentListing, EquipmentReview, MaintenanceRecord } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useFirebase } from '../context/FirebaseContext';
 import { EquipmentImage } from '../components/EquipmentCard';
@@ -32,6 +33,7 @@ export function EquipmentDetailPage() {
 
   const [equipment, setEquipment] = useState<EquipmentListing | null>(null);
   const [maintenanceHistory, setMaintenanceHistory] = useState<MaintenanceRecord[]>([]);
+  const [reviews, setReviews] = useState<EquipmentReview[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -65,10 +67,15 @@ export function EquipmentDetailPage() {
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    apiFetch<{ equipment: EquipmentListing; maintenanceHistory: MaintenanceRecord[] }>(`/api/equipment/${id}`)
+    apiFetch<{
+      equipment: EquipmentListing;
+      maintenanceHistory: MaintenanceRecord[];
+      reviews?: EquipmentReview[];
+    }>(`/api/equipment/${id}`)
       .then((data) => {
         setEquipment(data.equipment);
         setMaintenanceHistory(data.maintenanceHistory || []);
+        setReviews(data.reviews || []);
         setJobLocation(data.equipment.location_city);
         setRequiresOperator(data.equipment.operator_available);
         setRequiresTransport(data.equipment.transport_available);
@@ -516,6 +523,54 @@ export function EquipmentDetailPage() {
               </p>
             )}
           </div>
+
+          {/* Sample Renter Reviews & Operational Feedback */}
+          {reviews.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-lg p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Star className="w-4 h-4 text-amber-500 fill-amber-500" aria-hidden="true" />
+                  <h2 className="font-display text-lg font-semibold text-[#0F172A]">
+                    Renter Feedback &amp; Ratings
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  {equipment.average_rating != null && (
+                    <span className="font-mono tabular-nums font-semibold text-[#0F172A]">
+                      {equipment.average_rating.toFixed(1)} / 5.0 ({reviews.length})
+                    </span>
+                  )}
+                  <span className="text-amber-700 font-medium">· Sample demonstration reviews</span>
+                </div>
+              </div>
+
+              <div className="mt-4 divide-y divide-slate-100">
+                {reviews.map((rev) => (
+                  <div key={rev.id} className="py-4 first:pt-2 last:pb-0 space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="text-sm font-semibold text-[#0F172A]">{rev.reviewer_name}</span>
+                        {rev.reviewer_role_label && (
+                          <span className="text-xs text-slate-500"> · {rev.reviewer_role_label}</span>
+                        )}
+                        {rev.reviewer_city && (
+                          <span className="text-xs text-slate-500"> ({rev.reviewer_city})</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 font-mono text-xs text-slate-600">
+                        <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" aria-hidden="true" />
+                        <span className="font-semibold text-[#0F172A]">{rev.rating}.0</span>
+                        <span>· {rev.rental_duration_days}d rental</span>
+                        <span>· {rev.created_at.slice(0, 10)}</span>
+                      </div>
+                    </div>
+                    <div className="text-sm font-medium text-[#0F172A]">{rev.title}</div>
+                    <p className="text-sm text-slate-600 leading-relaxed">{rev.comment}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* In-App Enquiry & Report */}
           <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-4">

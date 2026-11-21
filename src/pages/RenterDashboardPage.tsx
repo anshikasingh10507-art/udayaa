@@ -146,6 +146,42 @@ export function RenterDashboardPage() {
           </div>
         </div>
       )}
+
+      {/* Recent Activity & Notifications */}
+      {!loading && notifications.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg p-6">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <h2 className="font-display text-lg font-semibold text-[#0F172A]">Recent Activity &amp; Alerts</h2>
+            <Link to="/notifications" className="text-xs font-medium text-[#0F766E] hover:underline">
+              View all notifications
+            </Link>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {notifications.map((n) => (
+              <Link
+                key={n.id}
+                to={n.link_path || '/notifications'}
+                className="py-3 flex items-start justify-between gap-4 hover:bg-slate-50/70 transition-colors"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-[#0F172A] truncate">{n.title}</span>
+                    {!n.is_read && (
+                      <span className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-[#0D9488] text-white shrink-0">
+                        New
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-600 mt-0.5 line-clamp-1">{n.body}</p>
+                </div>
+                <span className="text-xs font-mono text-slate-400 whitespace-nowrap shrink-0">
+                  {n.created_at.slice(0, 10)}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
